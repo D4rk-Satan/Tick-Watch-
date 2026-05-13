@@ -18,7 +18,7 @@ load_dotenv()
 # Global State
 connected_clients = set()
 activity_stats = {} 
-deal_cache = deque(maxlen=20000) # Increased capacity
+deal_cache = deque(maxlen=20000) 
 fyers_stream = None
 nifty_strikes_to_sub = []
 
@@ -27,20 +27,12 @@ def get_ist_time():
 
 def extract_strike_type(sym: str):
     if not sym or not isinstance(sym, str): return None, None
-    # Matches patterns like NIFTY2651423500CE
-    match = re.search(r'(\d{5})(CE|PE)$', sym)
-    if match: return int(match.group(1)), match.group(2)
-    # Generic match for any digits followed by CE/PE
     match = re.search(r'(\d+)(CE|PE)$', sym)
     if match: return int(match.group(1)), match.group(2)
     return None, None
 
 async def broadcast_deal(deal: dict):
     if isinstance(deal, dict) and "symbol" in deal:
-        # Diagnostic: Only print if significant
-        if deal.get("score", 0) >= 4:
-            print(f"🔥 INSTITUTIONAL: {deal.get('symbol')} score={deal.get('score')} qty={deal.get('qty')}", flush=True)
-        
         activity_stats[deal["symbol"]] = activity_stats.get(deal["symbol"], 0) + 1
         deal_cache.append(deal)
         
@@ -57,12 +49,9 @@ async def odx_cycle_loop():
     while True:
         if fyers_stream and fyers_stream.engine:
             try:
-                # FIX 4: 60-second Sliding Window
                 now_ts = time.time()
                 current_deals = [d for d in list(deal_cache) if now_ts - float(d.get("timestamp", 0)) <= 60]
                 
-                print(f"ODX CYCLE: Processing {len(current_deals)} deals from last 60s", flush=True)
-
                 strikes_data = []
                 client_id = os.getenv("FYERS_CLIENT_ID")
                 access_token = os.getenv("FYERS_ACCESS_TOKEN") or (fyers_stream.access_token if fyers_stream else None)
@@ -105,12 +94,10 @@ async def odx_cycle_loop():
                         temp_nifty_strikes = []
                         ce_buy_l, ce_sell_l, pe_buy_l, pe_sell_l = 0.0, 0.0, 0.0, 0.0
                         
-                        # FIX 2: Fuzzy Symbol Matching Fallback
                         deals_by_strike = {} 
                         for d in current_deals:
                             sym = d.get("symbol", "")
                             if not sym: continue
-                            
                             if sym in symbol_lookup:
                                 d_strike, d_type = symbol_lookup[sym]
                             else:
@@ -136,14 +123,11 @@ async def odx_cycle_loop():
                             
                             def get_agg_and_flow(deals, sym_type):
                                 nonlocal ce_buy_l, ce_sell_l, pe_buy_l, pe_sell_l
-                                # FIX 1: Remove score filter from ODX aggregator
                                 sig_deals = [d for d in deals if d.get("symbol", "")]
                                 if not sig_deals: return "----", "----", 0.0
                                 
-                                # FIX 3: Lakhs Math (100,000 Divisor)
                                 d_buy_l  = sum(float(d.get("qty", 0)) * float(d.get("ltp", 0)) for d in sig_deals if d.get("direction") == "BUY") / 100000
                                 d_sell_l = sum(float(d.get("qty", 0)) * float(d.get("ltp", 0)) for d in sig_deals if d.get("direction") == "SELL") / 100000
-                                
                                 net_flow_l = d_buy_l - d_sell_l
                                 
                                 if sym_type == "CE":
@@ -188,7 +172,11 @@ async def odx_cycle_loop():
                             "is_first_cycle": False, "strikes": strikes_data,
                             "aggregator": {"aggregate_bias_l": float(bias_l), "ce_buy": round(float(ce_buy_l), 2), "ce_sell": round(float(ce_sell_l), 2), "pe_buy": round(float(pe_buy_l), 2), "pe_sell": round(float(pe_sell_l), 2)}
                         }
-                        fyers_stream.notifier.send_odx_heartbeat(odx_payload)
+                        
+                        # FIX 2: Heartbeat Logging
+                        print(f"SENDING ODX: {len(strikes_data)} strikes bias={bias_l:.2f}L", flush=True)
+                        result = fyers_stream.notifier.send_odx_heartbeat(odx_payload)
+                        print(f"TG SEND RESULT: {result}", flush=True)
 
             except Exception as e: print(f"ODX Error: {e}")
         await asyncio.sleep(60)
@@ -254,6 +242,11 @@ async def lifespan(app: FastAPI):
         global fyers_stream
         loop = asyncio.get_running_loop()
         fyers_stream = FyersDataStream(client_id, access_token, loop, broadcast_deal)
+        
+        # FIX 5: Startup Test
+        print("🚀 Sending Telegram startup test...", flush=True)
+        test_res = fyers_stream.notifier.send_message("✅ Tick-Watch started successfully")
+        print(f"TG STARTUP TEST: {test_res}", flush=True)
 
         client = get_fyers_data_client(client_id, access_token)
         initial_symbols, _ = get_all_symbols_to_subscribe(client)

@@ -1,69 +1,38 @@
 import requests
-import os
-from dotenv import load_dotenv
-
-load_dotenv()
+import json
+import time
+import traceback
 
 class TelegramNotifier:
     def __init__(self, token: str, chat_id: str):
         self.token = token
         self.chat_id = chat_id
         self.base_url = f"https://api.telegram.org/bot{token}"
+        
+        # FIX 4: Chat ID Format Check
+        print(f"CHAT ID FORMAT CHECK: '{self.chat_id}' starts_with_minus={str(self.chat_id).startswith('-')}", flush=True)
 
-    def send_message(self, text: str, parse_mode="MarkdownV2"):
-        url = f"{self.base_url}/sendMessage"
-        payload = {
-            "chat_id": self.chat_id,
-            "text": text,
-            "parse_mode": parse_mode
-        }
+    def send_message(self, text: str):
         try:
+            url = f"{self.base_url}/sendMessage"
+            payload = {"chat_id": self.chat_id, "text": text, "parse_mode": "HTML"}
             res = requests.post(url, json=payload)
             return res.json()
         except Exception as e:
-            print(f"Telegram Error: {e}")
+            print(f"❌ TG Send Error: {e}")
             return None
 
-    def send_deal_alert(self, deal: dict):
-        """Standard Deal Alert for 1000+ Lot Trades"""
-        sym = deal.get("symbol", "NIFTY")
-        ltp = deal.get("ltp", 0)
-        qty = deal.get("qty", 0)
-        direction = deal.get("direction", "BUY")
-        participant = deal.get("participant", "HNI")
-        
-        # Format for MarkdownV2
-        sym = sym.replace("-", "\\-").replace(".", "\\.")
-        
-        emoji = "🚀" if direction == "BUY" else "🔥"
-        text = (
-            f"{emoji} *INSTITUTIONAL FLOW DETECTED*\n\n"
-            f"Symbol: `{sym}`\n"
-            f"Action: *{direction}*\n"
-            f"Quantity: `{qty:,}`\n"
-            f"Price: `{ltp:.2f}`\n"
-            f"Who: *{participant}*"
-        )
-        return self.send_message(text)
-
     def send_odx_heartbeat(self, data: dict):
-        """Detailed ODX Pulse Table (60s Delta)"""
+        """v8.2 Hardened Heartbeat with Truncation & Logging"""
         try:
-            current_time = data.get("time", "00:00")
-            spot = data.get("spot", 0)
+            time_str = data.get("time", "00:00")
+            spot = data.get("spot", 0.0)
             atm = data.get("atm", 0)
-            pcr = data.get("pcr", 0.9)
-            
-            # Table Header
-            text = f"🧠 NIFTY ODX — {current_time}\n"
-            text += f"Spot: {spot:.2f} | ATM: {atm} | PCR: {pcr}\n"
-            text += "```copy\n"
-            text += f"{'STRIKE':<8} {'CALL Δ':<10} {'C-AGG':<8} {'PUT Δ':<10} {'P-AGG':<8} {'WHO':<8} {'SIGNAL':<12}\n\n"
-            
+            pcr = data.get("pcr", 0.0)
             strikes = data.get("strikes", [])
             
             header = (
-                f"<b>ODX Pulse • {current_time}</b>\n"
+                f"<b>ODX Pulse • {time_str}</b>\n"
                 f"<code>SPOT: {spot:.1f} | ATM: {atm} | PCR: {pcr:.2f}</code>\n\n"
                 f"<code>STRIKE | CE (L) | PE (L) | WHO</code>\n"
                 f"<code>-------|--------|--------|-----</code>\n"
@@ -96,14 +65,23 @@ class TelegramNotifier:
             
             text = header + body + footer
             
+            # FIX 3: Safety Truncation (4096 char limit)
+            if len(text) > 4000:
+                text = text[:4000] + "\n..."
+                print(f"WARNING: Heartbeat truncated to 4000 chars", flush=True)
+            
+            # FIX 1: Detailed Response Logging
             url = f"{self.base_url}/sendMessage"
-            payload = {
-                "chat_id": self.chat_id, 
-                "text": text,
-                "parse_mode": "HTML"
-            }
-            requests.post(url, json=payload)
-            return True
+            payload = {"chat_id": self.chat_id, "text": text, "parse_mode": "HTML"}
+            
+            print(f"TG HEARTBEAT: token={self.token[:10]}... chat={self.chat_id}", flush=True)
+            res = requests.post(url, json=payload)
+            print(f"TG API RESPONSE: {res.status_code} | {res.text}", flush=True)
+            
+            return res.json()
+            
+        # FIX 6: Exception Traceback
         except Exception as e:
-            print(f"Heartbeat Error: {e}")
+            print(f"HEARTBEAT EXCEPTION: {type(e).__name__}: {e}", flush=True)
+            traceback.print_exc()
             return None
