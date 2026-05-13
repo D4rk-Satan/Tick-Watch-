@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+websockets
+fyers-apiv3
+pyotp
+requests
+pandas
+python-dotenv
