@@ -29,7 +29,7 @@ class FyersDataStream:
         self.sub_queue = []
 
     def on_message(self, message):
-        """Lite Mode Parser with Debug & Guard (v6.1)"""
+        """Robust Parser (v6.2)"""
         try:
             if not message: return
             ticks = message if isinstance(message, list) else [message]
@@ -42,8 +42,12 @@ class FyersDataStream:
                 sym = tick.get("symbol") or tick.get("n")
                 if not sym: continue
                 
-                ltp = float(tick.get("ltp") or tick.get("lp") or 0.0)
-                total_vol = int(tick.get("vol") or tick.get("v", {}).get("vol") or 0)
+                # PRICE: lp is standard for V3
+                ltp = float(tick.get("lp") or tick.get("ltp") or tick.get("v", {}).get("lp") or 0.0)
+                
+                # VOLUME: Try every possible V3 key
+                v_data = tick.get("v", {}) if isinstance(tick.get("v"), dict) else {}
+                total_vol = int(tick.get("vol") or tick.get("volume") or v_data.get("vol") or v_data.get("volume") or 0)
                 
                 # Calculate LTQ (Delta)
                 last_vol = self.prev_volumes.get(sym, 0)
@@ -51,11 +55,11 @@ class FyersDataStream:
                 self.prev_volumes[sym] = total_vol
                 if ltq < 0: ltq = 0 
 
-                # Debug print for every tick processed
-                print(f"DEBUG tick: {sym} ltp={ltp} ltq={ltq}", flush=True)
-
+                # Relaxed guard: Let it through if ltp exists, even if ltq is 0 for indices
                 if ltp == 0.0: continue
-                if ltq == 0: continue # BUG 1 FIX: Skip if no volume change
+                
+                if time.time() % 10 < 0.2:
+                    print(f"DEBUG {sym}: Price={ltp} TotalVol={total_vol} Delta={ltq}")
 
                 raw_tick = {
                     "symbol": sym, "ltp": ltp, "last_traded_qty": ltq,
@@ -63,8 +67,9 @@ class FyersDataStream:
                 }
                 
                 deal = self.engine.analyze_tick(raw_tick)
-                # BUG 3 FIX: Send ALL deals regardless of score
                 if deal:
+                    # Update quantity in deal if it was missed
+                    if deal.get("qty") == 0 and ltq > 0: deal["qty"] = ltq
                     asyncio.run_coroutine_threadsafe(self.broadcast_callback(deal), self.loop)
                     
         except Exception as e:
