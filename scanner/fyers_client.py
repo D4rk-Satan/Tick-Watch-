@@ -18,7 +18,7 @@ class FyersDataStream:
         self.broadcast_callback = callback
         self.symbols = []
         self.engine = AnalysisEngine()
-        self.prev_volumes = {} # Fallback for qty
+        self.prev_volumes = {} 
         
         token = os.getenv("TELEGRAM_BOT_TOKEN")
         chat_id = os.getenv("TELEGRAM_CHAT_ID")
@@ -30,9 +30,14 @@ class FyersDataStream:
         self.sub_queue = []
 
     def on_message(self, message):
-        """Dual-Socket Parser (v7.1)"""
+        """Dual-Socket Parallel Parser (v7.2)"""
         try:
             if not message: return
+            
+            # Diagnostic: Show raw packets occasionally
+            if time.time() % 60 < 1:
+                print(f"RAW MSG: {message}", flush=True)
+
             ticks = message if isinstance(message, list) else [message]
             
             for tick in ticks:
@@ -42,10 +47,7 @@ class FyersDataStream:
                 sym = tick.get("symbol") or tick.get("n")
                 if not sym: continue
                 
-                # PRICE
                 ltp = float(tick.get("ltp") or tick.get("lp") or tick.get("v", {}).get("lp") or 0.0)
-                
-                # QUANTITY (Primary: ltq, Fallback: Volume Delta)
                 ltq = int(tick.get("ltq") or tick.get("last_traded_qty") or 0)
                 total_vol = int(tick.get("vol") or tick.get("v", {}).get("vol") or 0)
                 
@@ -63,7 +65,6 @@ class FyersDataStream:
                 
                 deal = self.engine.analyze_tick(raw_tick)
                 if deal:
-                    # Update qty in deal if calculated from delta
                     if deal.get("qty") == 0 and ltq > 0: deal["qty"] = ltq
                     asyncio.run_coroutine_threadsafe(self.broadcast_callback(deal), self.loop)
                     
@@ -77,23 +78,21 @@ class FyersDataStream:
         print("🏠 Fyers WS Connection Closed")
 
     def on_open_index(self):
-        print("✅ Index Socket Connected!")
+        print("✅ INDEX SOCKET ACTIVE")
         indices = ["NSE:NIFTY50-INDEX", "NSE:NIFTYBANK-INDEX"]
         self.index_ws.subscribe(symbols=indices, data_type="symbolData")
 
     def on_open_data(self):
-        print("✅ Data Socket Connected!")
+        print("✅ DATA SOCKET ACTIVE")
         self.is_connected = True
         if self.sub_queue:
-            print(f"🚀 Subscribing to {len(self.sub_queue)} Symbols...")
+            print(f"🚀 Subscribing to {len(self.sub_queue)} Data Symbols...")
             self.subscribe_symbols(self.sub_queue)
             self.sub_queue = []
 
     def subscribe_symbols(self, symbols: list):
         if not symbols: return
         valid_symbols = list(set([s for s in symbols if s and isinstance(s, str)]))
-        
-        # Bypassing the Index Infection by sending only non-indices here
         clean_symbols = [s for s in valid_symbols if "INDEX" not in s]
         
         CHUNK_SIZE = 20
@@ -110,19 +109,18 @@ class FyersDataStream:
         token_str = f"{self.client_id}:{self.access_token}"
         print(f"🚀 Launching Isolated Dual-Socket for: {self.client_id}")
         
-        # 1. INDEX SOCKET
         self.index_ws = data_ws.FyersDataSocket(
             access_token=token_str, log_path=os.getcwd(), litemode=False,
             on_connect=self.on_open_index, on_close=self.on_close,
             on_error=self.on_error, on_message=self.on_message
         )
         
-        # 2. DATA SOCKET
         self.data_ws = data_ws.FyersDataSocket(
             access_token=token_str, log_path=os.getcwd(), litemode=False,
             on_connect=self.on_open_data, on_close=self.on_close,
             on_error=self.on_error, on_message=self.on_message
         )
         
-        self.index_ws.connect()
-        self.data_ws.connect()
+        # START IN PARALLEL THREADS
+        threading.Thread(target=self.index_ws.connect, daemon=True).start()
+        threading.Thread(target=self.data_ws.connect, daemon=True).start()
