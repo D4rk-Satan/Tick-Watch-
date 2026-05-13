@@ -18,7 +18,7 @@ load_dotenv()
 # Global State
 connected_clients = set()
 activity_stats = {} 
-deal_cache = deque(maxlen=10000) 
+deal_cache = deque(maxlen=20000) # Increased capacity
 fyers_stream = None
 nifty_strikes_to_sub = []
 
@@ -27,17 +27,22 @@ def get_ist_time():
 
 def extract_strike_type(sym: str):
     if not sym or not isinstance(sym, str): return None, None
+    # Matches patterns like NIFTY2651423500CE
+    match = re.search(r'(\d{5})(CE|PE)$', sym)
+    if match: return int(match.group(1)), match.group(2)
+    # Generic match for any digits followed by CE/PE
     match = re.search(r'(\d+)(CE|PE)$', sym)
     if match: return int(match.group(1)), match.group(2)
     return None, None
 
 async def broadcast_deal(deal: dict):
     if isinstance(deal, dict) and "symbol" in deal:
-        # Step 1: Cache Audit
-        print(f"CACHE APPEND: {deal.get('symbol')} score={deal.get('score')} qty={deal.get('qty')} ltp={deal.get('ltp')}", flush=True)
+        # Diagnostic: Only print if significant
+        if deal.get("score", 0) >= 4:
+            print(f"🔥 INSTITUTIONAL: {deal.get('symbol')} score={deal.get('score')} qty={deal.get('qty')}", flush=True)
+        
         activity_stats[deal["symbol"]] = activity_stats.get(deal["symbol"], 0) + 1
         deal_cache.append(deal)
-        print(f"CACHE SIZE: {len(deal_cache)}", flush=True)
         
     if not connected_clients: return
     disconnected = set()
@@ -52,9 +57,11 @@ async def odx_cycle_loop():
     while True:
         if fyers_stream and fyers_stream.engine:
             try:
-                # Step 1: Cycle Audit
-                print(f"ODX CYCLE: cache has {len(deal_cache)} deals", flush=True)
-                print(f"ODX SAMPLE DEALS: {list(deal_cache)[:3]}", flush=True)
+                # FIX 4: 60-second Sliding Window
+                now_ts = time.time()
+                current_deals = [d for d in list(deal_cache) if now_ts - float(d.get("timestamp", 0)) <= 60]
+                
+                print(f"ODX CYCLE: Processing {len(current_deals)} deals from last 60s", flush=True)
 
                 strikes_data = []
                 client_id = os.getenv("FYERS_CLIENT_ID")
@@ -96,18 +103,20 @@ async def odx_cycle_loop():
                                 symbol_lookup[sym] = (strike, "PE")
 
                         temp_nifty_strikes = []
-                        ce_buy_cr, ce_sell_cr, pe_buy_cr, pe_sell_cr = 0.0, 0.0, 0.0, 0.0
-                        current_deals = list(deal_cache)
+                        ce_buy_l, ce_sell_l, pe_buy_l, pe_sell_l = 0.0, 0.0, 0.0, 0.0
                         
+                        # FIX 2: Fuzzy Symbol Matching Fallback
                         deals_by_strike = {} 
                         for d in current_deals:
-                            sym = d.get("symbol")
+                            sym = d.get("symbol", "")
+                            if not sym: continue
+                            
                             if sym in symbol_lookup:
                                 d_strike, d_type = symbol_lookup[sym]
                             else:
                                 d_strike, d_type = extract_strike_type(sym)
                             
-                            if d_strike and d_type:
+                            if d_strike is not None:
                                 if d_strike not in deals_by_strike: deals_by_strike[d_strike] = {"CE": [], "PE": []}
                                 deals_by_strike[d_strike][d_type].append(d)
 
@@ -126,42 +135,42 @@ async def odx_cycle_loop():
                             pe_deals = strike_deals["PE"]
                             
                             def get_agg_and_flow(deals, sym_type):
-                                nonlocal ce_buy_cr, ce_sell_cr, pe_buy_cr, pe_sell_cr
-                                # FIX F: REMOVE ALL SCORE FILTERS
-                                sig_deals = deals
+                                nonlocal ce_buy_l, ce_sell_l, pe_buy_l, pe_sell_l
+                                # FIX 1: Remove score filter from ODX aggregator
+                                sig_deals = [d for d in deals if d.get("symbol", "")]
                                 if not sig_deals: return "----", "----", 0.0
                                 
-                                # FIX E: CORRECT CRORE MATH (QTY * LTP / 10M)
-                                d_buy_cr  = sum(float(d.get("qty", 0)) * float(d.get("ltp", 0)) for d in sig_deals if d.get("direction") == "BUY") / 10000000
-                                d_sell_cr = sum(float(d.get("qty", 0)) * float(d.get("ltp", 0)) for d in sig_deals if d.get("direction") == "SELL") / 10000000
+                                # FIX 3: Lakhs Math (100,000 Divisor)
+                                d_buy_l  = sum(float(d.get("qty", 0)) * float(d.get("ltp", 0)) for d in sig_deals if d.get("direction") == "BUY") / 100000
+                                d_sell_l = sum(float(d.get("qty", 0)) * float(d.get("ltp", 0)) for d in sig_deals if d.get("direction") == "SELL") / 100000
                                 
-                                net_flow_cr = d_buy_cr - d_sell_cr
+                                net_flow_l = d_buy_l - d_sell_l
                                 
                                 if sym_type == "CE":
-                                    ce_buy_cr += d_buy_cr
-                                    ce_sell_cr += d_sell_cr
+                                    ce_buy_l += d_buy_l
+                                    ce_sell_l += d_sell_l
                                 else:
-                                    pe_buy_cr += d_buy_cr
-                                    pe_sell_cr += d_sell_cr
+                                    pe_buy_l += d_buy_l
+                                    pe_sell_l += d_sell_l
                                 
                                 buys = sum(float(d.get("qty") or 0.0) for d in sig_deals if d.get("direction") == "BUY")
                                 sells = sum(float(d.get("qty") or 0.0) for d in sig_deals if d.get("direction") == "SELL")
                                 agg = "BUY" if buys > sells else "SELL" if sells > buys else "----"
                                 participants = [d.get("participant") for d in sig_deals if d.get("participant") and d.get("participant") != "----"]
                                 who = max(set(participants), key=participants.count) if participants else "----"
-                                return agg, who, net_flow_cr
+                                return agg, who, net_flow_l
 
-                            ce_agg, ce_who, ce_pulse_cr = get_agg_and_flow(ce_deals, "CE")
-                            pe_agg, pe_who, pe_pulse_cr = get_agg_and_flow(pe_deals, "PE")
+                            ce_agg, ce_who, ce_pulse_l = get_agg_and_flow(ce_deals, "CE")
+                            pe_agg, pe_who, pe_pulse_l = get_agg_and_flow(pe_deals, "PE")
                             final_who = ce_who if ce_who != "----" else pe_who
 
-                            label = "Straddle" if ce_pulse_cr != 0 and pe_pulse_cr != 0 else "Call write" if ce_pulse_cr < 0 else "Put write" if pe_pulse_cr < 0 else "Accumulate"
-                            if abs(ce_pulse_cr) > 0.1 or abs(pe_pulse_cr) > 0.1: label += "⚡"
+                            label = "Straddle" if ce_pulse_l != 0 and pe_pulse_l != 0 else "Call write" if ce_pulse_l < 0 else "Put write" if pe_pulse_l < 0 else "Accumulate"
+                            if abs(ce_pulse_l) > 1.0 or abs(pe_pulse_l) > 1.0: label += "⚡"
                             
                             strikes_data.append({
                                 "strike": int(strike), "is_atm": strike == atm,
-                                "ce_delta_cr": float(ce_pulse_cr), "pe_delta_cr": float(pe_pulse_cr),
-                                "ce_oi_cr": float(ce_oi * 50 / 10000000), "pe_oi_cr": float(pe_oi * 50 / 10000000),
+                                "ce_delta_l": float(ce_pulse_l), "pe_delta_l": float(pe_pulse_l),
+                                "ce_oi_l": float(ce_oi * 50 / 100000), "pe_oi_l": float(pe_oi * 50 / 100000),
                                 "ce_aggressor": str(ce_agg), "pe_aggressor": str(pe_agg),
                                 "who": str(final_who), "label": str(label)
                             })
@@ -172,19 +181,14 @@ async def odx_cycle_loop():
                             if fyers_stream: 
                                 fyers_stream.subscribe_symbols(nifty_strikes_to_sub)
 
-                        bias_cr = (ce_buy_cr + pe_sell_cr) - (ce_sell_cr + pe_buy_cr)
+                        bias_l = (ce_buy_l + pe_sell_l) - (ce_sell_l + pe_buy_l)
                         
                         odx_payload = {
                             "time": str(current_time), "spot": float(spot), "atm": int(atm), "pcr": 0.91,
                             "is_first_cycle": False, "strikes": strikes_data,
-                            "aggregator": {"aggregate_bias_cr": float(bias_cr), "ce_buy": round(float(ce_buy_cr), 2), "ce_sell": round(float(ce_sell_cr), 2), "pe_buy": round(float(pe_buy_cr), 2), "pe_sell": round(float(pe_sell_cr), 2)}
+                            "aggregator": {"aggregate_bias_l": float(bias_l), "ce_buy": round(float(ce_buy_l), 2), "ce_sell": round(float(ce_sell_l), 2), "pe_buy": round(float(pe_buy_l), 2), "pe_sell": round(float(pe_sell_l), 2)}
                         }
                         fyers_stream.notifier.send_odx_heartbeat(odx_payload)
-                        
-                        cutoff = time.time() - 60
-                        remaining = [d for d in deal_cache if d.get("timestamp", 0) >= cutoff]
-                        deal_cache.clear()
-                        deal_cache.extend(remaining)
 
             except Exception as e: print(f"ODX Error: {e}")
         await asyncio.sleep(60)
