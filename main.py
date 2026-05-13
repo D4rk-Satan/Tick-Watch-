@@ -33,10 +33,11 @@ def extract_strike_type(sym: str):
 
 async def broadcast_deal(deal: dict):
     if isinstance(deal, dict) and "symbol" in deal:
-        # BUG 2 FIX: Debug print to confirm tick ingestion
-        print(f"DEBUG broadcast_deal: {deal.get('symbol')} score={deal.get('score')} qty={deal.get('qty')}", flush=True)
+        # Step 1: Cache Audit
+        print(f"CACHE APPEND: {deal.get('symbol')} score={deal.get('score')} qty={deal.get('qty')} ltp={deal.get('ltp')}", flush=True)
         activity_stats[deal["symbol"]] = activity_stats.get(deal["symbol"], 0) + 1
         deal_cache.append(deal)
+        print(f"CACHE SIZE: {len(deal_cache)}", flush=True)
         
     if not connected_clients: return
     disconnected = set()
@@ -51,6 +52,10 @@ async def odx_cycle_loop():
     while True:
         if fyers_stream and fyers_stream.engine:
             try:
+                # Step 1: Cycle Audit
+                print(f"ODX CYCLE: cache has {len(deal_cache)} deals", flush=True)
+                print(f"ODX SAMPLE DEALS: {list(deal_cache)[:3]}", flush=True)
+
                 strikes_data = []
                 client_id = os.getenv("FYERS_CLIENT_ID")
                 access_token = os.getenv("FYERS_ACCESS_TOKEN") or (fyers_stream.access_token if fyers_stream else None)
@@ -122,19 +127,14 @@ async def odx_cycle_loop():
                             
                             def get_agg_and_flow(deals, sym_type):
                                 nonlocal ce_buy_cr, ce_sell_cr, pe_buy_cr, pe_sell_cr
-                                # BUG 3 FIX: Lower filter to include more institutional activity
-                                sig_deals = [d for d in deals if d.get("score", 0) >= 1]
+                                # FIX F: REMOVE ALL SCORE FILTERS
+                                sig_deals = deals
                                 if not sig_deals: return "----", "----", 0.0
                                 
-                                sample_sym = sig_deals[0].get("symbol", "")
-                                lot_size = 15 if "BANKNIFTY" in sample_sym else 50
-                                divisor = lot_size * 10000000
+                                # FIX E: CORRECT CRORE MATH (QTY * LTP / 10M)
+                                d_buy_cr  = sum(float(d.get("qty", 0)) * float(d.get("ltp", 0)) for d in sig_deals if d.get("direction") == "BUY") / 10000000
+                                d_sell_cr = sum(float(d.get("qty", 0)) * float(d.get("ltp", 0)) for d in sig_deals if d.get("direction") == "SELL") / 10000000
                                 
-                                buys = sum(float(d.get("qty") or 0.0) for d in sig_deals if d.get("direction") == "BUY")
-                                sells = sum(float(d.get("qty") or 0.0) for d in sig_deals if d.get("direction") == "SELL")
-                                
-                                d_buy_cr = sum(float(d.get("qty") or 0.0)*float(d.get("ltp") or 0.0) for d in sig_deals if d.get("direction")=="BUY") / divisor
-                                d_sell_cr = sum(float(d.get("qty") or 0.0)*float(d.get("ltp") or 0.0) for d in sig_deals if d.get("direction")=="SELL") / divisor
                                 net_flow_cr = d_buy_cr - d_sell_cr
                                 
                                 if sym_type == "CE":
@@ -144,6 +144,8 @@ async def odx_cycle_loop():
                                     pe_buy_cr += d_buy_cr
                                     pe_sell_cr += d_sell_cr
                                 
+                                buys = sum(float(d.get("qty") or 0.0) for d in sig_deals if d.get("direction") == "BUY")
+                                sells = sum(float(d.get("qty") or 0.0) for d in sig_deals if d.get("direction") == "SELL")
                                 agg = "BUY" if buys > sells else "SELL" if sells > buys else "----"
                                 participants = [d.get("participant") for d in sig_deals if d.get("participant") and d.get("participant") != "----"]
                                 who = max(set(participants), key=participants.count) if participants else "----"
@@ -168,7 +170,6 @@ async def odx_cycle_loop():
                         if set(new_strikes) != set(nifty_strikes_to_sub):
                             nifty_strikes_to_sub = new_strikes
                             if fyers_stream: 
-                                print(f"🔄 Rotating symbols: Subscribing to {len(nifty_strikes_to_sub)} NIFTY strikes", flush=True)
                                 fyers_stream.subscribe_symbols(nifty_strikes_to_sub)
 
                         bias_cr = (ce_buy_cr + pe_sell_cr) - (ce_sell_cr + pe_buy_cr)
@@ -180,7 +181,6 @@ async def odx_cycle_loop():
                         }
                         fyers_stream.notifier.send_odx_heartbeat(odx_payload)
                         
-                        # BUG 4 FIX: Sliding Window Cleanup (Only remove deals older than 60s)
                         cutoff = time.time() - 60
                         remaining = [d for d in deal_cache if d.get("timestamp", 0) >= cutoff]
                         deal_cache.clear()

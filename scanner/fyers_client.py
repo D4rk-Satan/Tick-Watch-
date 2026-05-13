@@ -28,35 +28,42 @@ class FyersDataStream:
         self.sub_queue = []
 
     def on_message(self, message):
-        """Clean Data Parser (v6.4)"""
+        """Full Audit Parser (v7.0)"""
         try:
             if not message: return
+            # Step 1: RAW Diagnostic Print
+            print(f"RAW MSG: {message}", flush=True)
+
             ticks = message if isinstance(message, list) else [message]
             
             for tick in ticks:
-                # DEBUG: First 2 seconds of every minute
-                if time.time() % 60 < 2:
-                    print(f"DEBUG RAW: {tick}")
-
                 if isinstance(tick, dict) and tick.get("type") in ["cn", "lit", "ful", "sub"]:
                     continue
                 
                 sym = tick.get("symbol") or tick.get("n")
                 if not sym: continue
                 
-                # Extract Price and Quantity
+                # Step 2: Advanced Parsing (Full Mode)
                 ltp = float(tick.get("ltp") or tick.get("lp") or 0.0)
                 ltq = int(tick.get("ltq") or tick.get("last_traded_qty") or 0)
+                bp = float(tick.get("bid") or tick.get("bp") or 0.0)
+                ap = float(tick.get("ask") or tick.get("ap") or 0.0)
+                atp = float(tick.get("atp") or tick.get("avg_trade_price") or ltp)
+                
+                # Diagnostic Print
+                print(f"TICK PARSED: sym={sym} ltp={ltp} ltq={ltq} bp={bp} ap={ap}", flush=True)
                 
                 if ltp == 0.0: continue
 
                 raw_tick = {
                     "symbol": sym, "ltp": ltp, "last_traded_qty": ltq,
-                    "bid_price": ltp, "ask_price": ltp
+                    "bid_price": bp, "ask_price": ap, "avg_trade_price": atp
                 }
                 
                 deal = self.engine.analyze_tick(raw_tick)
                 if deal:
+                    # Step 1: Deal Diagnostic
+                    print(f"DEAL RESULT: score={deal.get('score')} tier={deal.get('tier')} dir={deal.get('direction')}", flush=True)
                     asyncio.run_coroutine_threadsafe(self.broadcast_callback(deal), self.loop)
                     
         except Exception as e:
@@ -73,15 +80,14 @@ class FyersDataStream:
         print("✅ Fyers WS Connected!")
         self.is_connected = True
         
-        # BATCH 1: ONLY INDICES (To prevent infection of other symbols)
+        # BATCH 1: ONLY INDICES
         indices = ["NSE:NIFTY50-INDEX", "NSE:NIFTYBANK-INDEX"]
         print(f"🚀 Subscribing to INDICES: {indices}")
         self.ws.subscribe(symbols=indices, data_type="symbolData")
         
         def delayed_sub():
-            time.sleep(5) # Give indices time to settle
+            time.sleep(5)
             if self.sub_queue:
-                # BATCH 2: STOCKS AND OPTIONS (In small chunks)
                 others = [s for s in self.sub_queue if s not in indices]
                 print(f"🚀 Subscribing to {len(others)} Data Symbols...")
                 self.subscribe_symbols(others)
@@ -110,7 +116,7 @@ class FyersDataStream:
         self.ws = data_ws.FyersDataSocket(
             access_token=token_str,
             log_path=os.getcwd(),
-            litemode=False,
+            litemode=False, # FIX A: BACK TO FULL MODE
             reconnect=True,
             on_connect=self.on_open,
             on_close=self.on_close,
