@@ -43,6 +43,36 @@ async def broadcast_deal(deal: dict):
         except Exception: disconnected.add(client)
     for c in disconnected: connected_clients.remove(c)
 
+async def check_instant_alerts(notifier, strikes_data: list, spot: float, atm: int):
+    """v9.0 Feature 4: Fires immediate Telegram alert if any strike hits >50L in current window"""
+    THRESHOLD_L = 50.0
+    
+    for strike in strikes_data:
+        ce_flow = abs(float(strike.get("ce_delta_l", 0)))
+        pe_flow = abs(float(strike.get("pe_delta_l", 0)))
+        total   = ce_flow + pe_flow
+        
+        if total >= THRESHOLD_L:
+            strike_price = strike.get("strike")
+            is_atm = strike.get("is_atm", False)
+            atm_label = " [ATM]" if is_atm else f" [{'+' if strike_price > atm else ''}{strike_price - atm}]"
+            
+            ce_str = f"+{ce_flow:.1f}L" if ce_flow > 0 else "----"
+            pe_str = f"+{pe_flow:.1f}L" if pe_flow > 0 else "----"
+            who    = strike.get("who", "----")
+            label  = strike.get("label", "----")
+            
+            msg = (
+                f"⚡ FLOW SPIKE ALERT\n"
+                f"Strike: {strike_price}{atm_label}\n"
+                f"CE: {ce_str} | PE: {pe_str}\n"
+                f"Total: {total:.1f}L in 60s\n"
+                f"Who: {who} | {label}\n"
+                f"Spot: {spot:.1f} | ATM: {atm}"
+            )
+            notifier.send_message(msg)
+            print(f"⚡ INSTANT ALERT FIRED: {strike_price} total={total:.1f}L", flush=True)
+
 async def odx_cycle_loop():
     global fyers_stream, deal_cache, nifty_strikes_to_sub
     
@@ -161,7 +191,6 @@ async def odx_cycle_loop():
                             pe_agg, pe_who, pe_pulse_l = get_agg_and_flow(pe_deals, "PE")
                             final_who = ce_who if ce_who != "----" else pe_who
 
-                            # FIX: Advanced Strategy Labeling
                             if abs(ce_pulse_l) > 0.1 and abs(pe_pulse_l) > 0.1:
                                 if ce_pulse_l > 0 and pe_pulse_l > 0: label = "Straddle Buy⚡"
                                 elif ce_pulse_l < 0 and pe_pulse_l < 0: label = "Straddle Write⚡"
@@ -187,6 +216,35 @@ async def odx_cycle_loop():
 
                         bias_l = (ce_buy_l + pe_sell_l) - (ce_sell_l + pe_buy_l)
                         
+                        # Step 4: Instant Alerts
+                        await check_instant_alerts(fyers_stream.notifier, strikes_data, spot, atm)
+                        
+                        # Step 5: Wire OI spike and pin detection
+                        spike_alerts = []
+                        pin_alerts   = []
+
+                        for sym, oi_deque in fyers_stream.engine.oi_history.items():
+                            if not oi_deque: continue
+                            
+                            spike = fyers_stream.engine.detect_oi_spike(sym)
+                            if spike.get("spike"):
+                                spike_alerts.append(f"🔥 OI SPIKE: {sym} +{spike['pct_change']}% ({spike['abs_change']:,} contracts)")
+                            
+                            current_oi = oi_deque[-1]
+                            recent = [d for d in list(deal_cache) if d.get("symbol") == sym]
+                            if recent:
+                                last_ltp = recent[-1].get("ltp", 0)
+                                pin = fyers_stream.engine.detect_pin(sym, last_ltp, current_oi)
+                                if pin.get("pin"):
+                                    pin_alerts.append(f"📌 PIN ALERT: {pin['strike']} locked ±{pin['price_range_pct']}% OI+{pin['oi_growth']:,}")
+
+                        if spike_alerts or pin_alerts:
+                            alert_text = "SMART SIGNAL ALERTS\n\n"
+                            if spike_alerts: alert_text += "\n".join(spike_alerts) + "\n\n"
+                            if pin_alerts: alert_text += "\n".join(pin_alerts)
+                            fyers_stream.notifier.send_message(alert_text)
+                            print(f"⚡ SMART ALERTS SENT: {len(spike_alerts)} spikes, {len(pin_alerts)} pins", flush=True)
+
                         odx_payload = {
                             "time": str(current_time), "spot": float(spot), "atm": int(atm), "pcr": live_pcr,
                             "strikes": strikes_data,
