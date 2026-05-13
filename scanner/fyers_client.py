@@ -28,14 +28,18 @@ class FyersDataStream:
         self.data_ws = None
         self.is_connected = False
         self.sub_queue = []
+        
+        # Create separate log dirs for each socket
+        os.makedirs("logs/index", exist_ok=True)
+        os.makedirs("logs/data", exist_ok=True)
 
     def on_message(self, message):
-        """Dual-Socket Parallel Parser (v7.2)"""
+        """Hardened Parallel Parser (v7.3)"""
         try:
             if not message: return
             
-            # Diagnostic: Show raw packets occasionally
-            if time.time() % 60 < 1:
+            # RAW MSG Logging (Every 30s)
+            if time.time() % 30 < 1:
                 print(f"RAW MSG: {message}", flush=True)
 
             ticks = message if isinstance(message, list) else [message]
@@ -47,14 +51,18 @@ class FyersDataStream:
                 sym = tick.get("symbol") or tick.get("n")
                 if not sym: continue
                 
-                ltp = float(tick.get("ltp") or tick.get("lp") or tick.get("v", {}).get("lp") or 0.0)
+                # V3 Field Extraction
+                ltp = float(tick.get("ltp") or tick.get("lp") or 0.0)
                 ltq = int(tick.get("ltq") or tick.get("last_traded_qty") or 0)
-                total_vol = int(tick.get("vol") or tick.get("v", {}).get("vol") or 0)
+                total_vol = int(tick.get("vol") or tick.get("volume") or 0)
                 
+                # Volume Delta Fallback
                 if ltq == 0 and total_vol > 0:
                     last_vol = self.prev_volumes.get(sym, 0)
-                    ltq = total_vol - last_vol if last_vol > 0 else 0
+                    if last_vol > 0:
+                        ltq = total_vol - last_vol
                     self.prev_volumes[sym] = total_vol
+                    if ltq < 0: ltq = 0
                 
                 if ltp == 0.0: continue
 
@@ -65,6 +73,7 @@ class FyersDataStream:
                 
                 deal = self.engine.analyze_tick(raw_tick)
                 if deal:
+                    # Sync quantity
                     if deal.get("qty") == 0 and ltq > 0: deal["qty"] = ltq
                     asyncio.run_coroutine_threadsafe(self.broadcast_callback(deal), self.loop)
                     
@@ -78,16 +87,18 @@ class FyersDataStream:
         print("🏠 Fyers WS Connection Closed")
 
     def on_open_index(self):
-        print("✅ INDEX SOCKET ACTIVE")
+        print("✅ [INDEX] CHANNEL READY")
         indices = ["NSE:NIFTY50-INDEX", "NSE:NIFTYBANK-INDEX"]
-        self.index_ws.subscribe(symbols=indices, data_type="symbolData")
+        if self.index_ws:
+            self.index_ws.subscribe(symbols=indices, data_type="symbolData")
 
     def on_open_data(self):
-        print("✅ DATA SOCKET ACTIVE")
+        print("✅ [DATA] CHANNEL READY")
         self.is_connected = True
         if self.sub_queue:
-            print(f"🚀 Subscribing to {len(self.sub_queue)} Data Symbols...")
-            self.subscribe_symbols(self.sub_queue)
+            q = [s for s in self.sub_queue if "INDEX" not in s]
+            print(f"🚀 Initializing Data Stream for {len(q)} Symbols...")
+            self.subscribe_symbols(q)
             self.sub_queue = []
 
     def subscribe_symbols(self, symbols: list):
@@ -107,20 +118,22 @@ class FyersDataStream:
 
     def start(self):
         token_str = f"{self.client_id}:{self.access_token}"
-        print(f"🚀 Launching Isolated Dual-Socket for: {self.client_id}")
+        print(f"🚀 Launching Hardened Dual-Socket: {self.client_id}")
         
+        # 1. INDEX SOCKET
         self.index_ws = data_ws.FyersDataSocket(
-            access_token=token_str, log_path=os.getcwd(), litemode=False,
+            access_token=token_str, log_path="logs/index", litemode=False,
             on_connect=self.on_open_index, on_close=self.on_close,
             on_error=self.on_error, on_message=self.on_message
         )
         
+        # 2. DATA SOCKET
         self.data_ws = data_ws.FyersDataSocket(
-            access_token=token_str, log_path=os.getcwd(), litemode=False,
+            access_token=token_str, log_path="logs/data", litemode=False,
             on_connect=self.on_open_data, on_close=self.on_close,
             on_error=self.on_error, on_message=self.on_message
         )
         
-        # START IN PARALLEL THREADS
         threading.Thread(target=self.index_ws.connect, daemon=True).start()
+        time.sleep(2) # Staggered start
         threading.Thread(target=self.data_ws.connect, daemon=True).start()
