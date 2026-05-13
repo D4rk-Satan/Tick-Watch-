@@ -29,16 +29,12 @@ class FyersDataStream:
         self.sub_queue = []
 
     def on_message(self, message):
-        """Lite Mode Parser with Volume Delta (v5.8)"""
+        """Lite Mode Parser with Debug & Guard (v6.1)"""
         try:
             if not message: return
             ticks = message if isinstance(message, list) else [message]
             
             for tick in ticks:
-                # DEBUG: Print raw tick for the first few seconds
-                if time.time() % 30 < 2:
-                    print(f"DEBUG RAW TICK: {tick}")
-                
                 if isinstance(tick, dict) and tick.get("type") in ["cn", "lit", "ful", "sub"]:
                     print(f"DEBUG System: {tick}")
                     continue
@@ -46,7 +42,6 @@ class FyersDataStream:
                 sym = tick.get("symbol") or tick.get("n")
                 if not sym: continue
                 
-                # In Lite Mode, ltp is in 'lp' or 'v' -> 'lp'
                 ltp = float(tick.get("ltp") or tick.get("lp") or 0.0)
                 total_vol = int(tick.get("vol") or tick.get("v", {}).get("vol") or 0)
                 
@@ -56,11 +51,11 @@ class FyersDataStream:
                 self.prev_volumes[sym] = total_vol
                 if ltq < 0: ltq = 0 
 
+                # Debug print for every tick processed
+                print(f"DEBUG tick: {sym} ltp={ltp} ltq={ltq}", flush=True)
+
                 if ltp == 0.0: continue
-                
-                # Proof of life every 10s
-                if time.time() % 10 < 0.2:
-                    print(f"🔥 TICK: {sym} @ {ltp} (V-Delta: {ltq})")
+                if ltq == 0: continue # BUG 1 FIX: Skip if no volume change
 
                 raw_tick = {
                     "symbol": sym, "ltp": ltp, "last_traded_qty": ltq,
@@ -68,7 +63,8 @@ class FyersDataStream:
                 }
                 
                 deal = self.engine.analyze_tick(raw_tick)
-                if deal and deal.get("score", 0) >= 4:
+                # BUG 3 FIX: Send ALL deals regardless of score
+                if deal:
                     asyncio.run_coroutine_threadsafe(self.broadcast_callback(deal), self.loop)
                     
         except Exception as e:
@@ -121,7 +117,7 @@ class FyersDataStream:
         self.ws = data_ws.FyersDataSocket(
             access_token=token_str,
             log_path=os.getcwd(),
-            litemode=True, # LITE MODE FOR STABILITY
+            litemode=True,
             reconnect=True,
             on_connect=self.on_open,
             on_close=self.on_close,

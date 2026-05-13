@@ -26,7 +26,6 @@ def get_ist_time():
     return (datetime.utcnow() + timedelta(hours=5, minutes=30)).strftime("%H:%M:%S")
 
 def extract_strike_type(sym: str):
-    """Fallback Fuzzy Extractor - Grabs the LAST sequence of digits before CE/PE"""
     if not sym or not isinstance(sym, str): return None, None
     match = re.search(r'(\d+)(CE|PE)$', sym)
     if match: return int(match.group(1)), match.group(2)
@@ -34,8 +33,11 @@ def extract_strike_type(sym: str):
 
 async def broadcast_deal(deal: dict):
     if isinstance(deal, dict) and "symbol" in deal:
+        # BUG 2 FIX: Debug print to confirm tick ingestion
+        print(f"DEBUG broadcast_deal: {deal.get('symbol')} score={deal.get('score')} qty={deal.get('qty')}", flush=True)
         activity_stats[deal["symbol"]] = activity_stats.get(deal["symbol"], 0) + 1
         deal_cache.append(deal)
+        
     if not connected_clients: return
     disconnected = set()
     for client in connected_clients:
@@ -44,7 +46,6 @@ async def broadcast_deal(deal: dict):
     for c in disconnected: connected_clients.remove(c)
 
 async def odx_cycle_loop():
-    """NIFTY ODX Heartbeat (v5.2) - Precise Symbol Mapping"""
     global fyers_stream, deal_cache, nifty_strikes_to_sub
     
     while True:
@@ -73,7 +74,7 @@ async def odx_cycle_loop():
                         current_time = get_ist_time()
                         
                         strike_map = {}
-                        symbol_lookup = {} # Mapping symbol -> (strike, type)
+                        symbol_lookup = {}
                         
                         for item in raw_chain:
                             strike = int(item.get("strike_price") or 0)
@@ -93,14 +94,12 @@ async def odx_cycle_loop():
                         ce_buy_cr, ce_sell_cr, pe_buy_cr, pe_sell_cr = 0.0, 0.0, 0.0, 0.0
                         current_deals = list(deal_cache)
                         
-                        # Pre-filter deals by strike/type using the lookup map + Fuzzy Fallback
-                        deals_by_strike = {} # {strike: {"CE": [], "PE": []}}
+                        deals_by_strike = {} 
                         for d in current_deals:
                             sym = d.get("symbol")
                             if sym in symbol_lookup:
                                 d_strike, d_type = symbol_lookup[sym]
                             else:
-                                # FUZZY FALLBACK: Extract strike/type from name (e.g. NIFTY2651423500CE)
                                 d_strike, d_type = extract_strike_type(sym)
                             
                             if d_strike and d_type:
@@ -123,10 +122,10 @@ async def odx_cycle_loop():
                             
                             def get_agg_and_flow(deals, sym_type):
                                 nonlocal ce_buy_cr, ce_sell_cr, pe_buy_cr, pe_sell_cr
-                                sig_deals = [d for d in deals if d.get("score", 0) >= 4]
+                                # BUG 3 FIX: Lower filter to include more institutional activity
+                                sig_deals = [d for d in deals if d.get("score", 0) >= 1]
                                 if not sig_deals: return "----", "----", 0.0
                                 
-                                # Detect lot size from symbol
                                 sample_sym = sig_deals[0].get("symbol", "")
                                 lot_size = 15 if "BANKNIFTY" in sample_sym else 50
                                 divisor = lot_size * 10000000
@@ -180,8 +179,14 @@ async def odx_cycle_loop():
                             "aggregator": {"aggregate_bias_cr": float(bias_cr), "ce_buy": round(float(ce_buy_cr), 2), "ce_sell": round(float(ce_sell_cr), 2), "pe_buy": round(float(pe_buy_cr), 2), "pe_sell": round(float(pe_sell_cr), 2)}
                         }
                         fyers_stream.notifier.send_odx_heartbeat(odx_payload)
+                        
+                        # BUG 4 FIX: Sliding Window Cleanup (Only remove deals older than 60s)
+                        cutoff = time.time() - 60
+                        remaining = [d for d in deal_cache if d.get("timestamp", 0) >= cutoff]
                         deal_cache.clear()
-            except Exception as e: print(f"ODX v5.2 Error: {e}")
+                        deal_cache.extend(remaining)
+
+            except Exception as e: print(f"ODX Error: {e}")
         await asyncio.sleep(60)
 
 async def rotation_cycle_loop():
@@ -205,7 +210,7 @@ async def rotation_cycle_loop():
                 if final_to_sub: fyers_stream.subscribe_symbols(final_to_sub)
                 activity_stats = {s: 0 for s in fyers_stream.symbols}
             except Exception as e: print(f"Rotation Error: {e}")
-        await asyncio.sleep(3600) # Stop downloading masters every minute!
+        await asyncio.sleep(3600) 
 
 async def oi_polling_loop():
     global fyers_stream, nifty_strikes_to_sub
@@ -234,23 +239,18 @@ async def lifespan(app: FastAPI):
     client_id = os.getenv("FYERS_CLIENT_ID")
     access_token = os.getenv("FYERS_ACCESS_TOKEN")
     
-    # Auto-generate token if missing but credentials exist
     if client_id and not access_token:
-        print("🚀 Access Token missing. Starting Automated Login...")
         try:
             from scanner.fyers_auth import get_access_token
             access_token = get_access_token()
             os.environ["FYERS_ACCESS_TOKEN"] = access_token
-            print("✅ Login Successful! Token generated.")
-        except Exception as e:
-            print(f"❌ Automated Login Failed: {e}")
+        except Exception as e: print(f"Auth Error: {e}")
 
     if client_id and access_token:
         global fyers_stream
         loop = asyncio.get_running_loop()
         fyers_stream = FyersDataStream(client_id, access_token, loop, broadcast_deal)
 
-        # Bug 1 Fix: pre-load symbols before .start()
         client = get_fyers_data_client(client_id, access_token)
         initial_symbols, _ = get_all_symbols_to_subscribe(client)
         fyers_stream.sub_queue = initial_symbols
