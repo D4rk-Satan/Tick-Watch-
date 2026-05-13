@@ -8,10 +8,8 @@ class TelegramNotifier:
         self.token = token
         self.chat_id = chat_id
         self.base_url = f"https://api.telegram.org/bot{token}"
-        print(f"CHAT ID FORMAT CHECK: '{self.chat_id}' starts_with_minus={str(self.chat_id).startswith('-')}", flush=True)
 
     def send_message(self, text: str, parse_mode=None):
-        """v8.3 Plain Text Mode (Fix 1)"""
         try:
             url = f"{self.base_url}/sendMessage"
             payload = {"chat_id": self.chat_id, "text": text}
@@ -24,46 +22,47 @@ class TelegramNotifier:
             return None
 
     def send_odx_heartbeat(self, data: dict):
-        """v8.3 Bulletproof Plain-Text Heartbeat (Fix 2 & 3)"""
+        """v8.4 Rich Table Heartbeat"""
         try:
             time_str = data.get("time", "00:00")
             spot = data.get("spot", 0.0)
             atm = data.get("atm", 0)
-            pcr = data.get("pcr", 0.0)
+            pcr = data.get("pcr", 0.91)
             strikes = data.get("strikes", [])
             
-            # Use Plain Text Header (No HTML/Markdown)
+            # FIX 4: Rich Header
             header = (
                 f"ODX Pulse • {time_str}\n"
                 f"SPOT: {spot:.1f} | ATM: {atm} | PCR: {pcr:.2f}\n\n"
-                f"STRIKE | CE (L) | PE (L) | WHO\n"
-                f"----------------------------\n"
+                f"{'STRIKE':<7} | {'CE (L)':<7} {'C-A':<5} | {'PE (L)':<7} {'P-A':<5} | {'WHO':<5} | SIGNAL\n"
+                f"----------------------------------------------------------\n"
             )
             
             body = ""
             for s in strikes:
-                # Fix 2: Using .get() for all keys with fallbacks
                 strike_price = s.get('strike', '???')
                 strike_str = str(strike_price)
                 if s.get('is_atm'): strike_str = f"*{strike_str}"
                 
-                # Handling renamed delta keys
-                ce_val = s.get('ce_delta_l', s.get('ce_delta_cr', 0.0))
-                pe_val = s.get('pe_delta_l', s.get('pe_delta_cr', 0.0))
-                
+                ce_val = s.get('ce_delta_l', 0.0)
+                pe_val = s.get('pe_delta_l', 0.0)
                 ce_fmt = f"{ce_val:+.1f}L" if abs(ce_val) >= 0.1 else "----"
                 pe_fmt = f"{pe_val:+.1f}L" if abs(pe_val) >= 0.1 else "----"
                 
+                c_agg = s.get('ce_aggressor', '----')
+                p_agg = s.get('pe_aggressor', '----')
                 who = s.get('who', '----')
-                row = f"{strike_str:<6} | {ce_fmt:<6} | {pe_fmt:<6} | {who}\n"
+                signal = s.get('label', '----')
+                
+                row = f"{strike_str:<7} | {ce_fmt:<7} {c_agg:<5} | {pe_fmt:<7} {p_agg:<5} | {who:<5} | {signal}\n"
                 body += row
 
             agg = data.get("aggregator", {})
-            bias_l = agg.get("aggregate_bias_l", agg.get("aggregate_bias_cr", 0.0))
+            bias_l = agg.get("aggregate_bias_l", 0.0)
             bias_sign = "+" if bias_l > 0 else "-" if bias_l < 0 else "="
             
             footer = (
-                f"----------------------------\n"
+                f"----------------------------------------------------------\n"
                 f"Institutional Flow (60s)\n"
                 f"BIAS: {bias_sign} {bias_l:+.1f} Lakhs\n"
                 f"CE: {agg.get('ce_buy',0):.1f}L vs {agg.get('ce_sell',0):.1f}L\n"
@@ -74,24 +73,17 @@ class TelegramNotifier:
             
             if len(text) > 4000:
                 text = text[:4000] + "\n..."
-                print(f"WARNING: Heartbeat truncated", flush=True)
             
             url = f"{self.base_url}/sendMessage"
             payload = {"chat_id": self.chat_id, "text": text}
-            
-            print(f"TG HEARTBEAT: token={self.token[:10]}... chat={self.chat_id}", flush=True)
             res = requests.post(url, json=payload)
-            print(f"TG API RESPONSE: {res.status_code} | {res.text}", flush=True)
-            
             return res.json()
             
         except Exception as e:
-            print(f"HEARTBEAT EXCEPTION: {type(e).__name__}: {e}", flush=True)
-            traceback.print_exc()
+            print(f"HEARTBEAT EXCEPTION: {e}")
             return None
 
     def send_deal_alert(self, deal: dict):
-        """v8.3 Plain Text Deal Alert"""
         try:
             sym = deal.get("symbol", "UNKNOWN")
             ltp = deal.get("ltp", 0.0)
@@ -99,7 +91,6 @@ class TelegramNotifier:
             direction = deal.get("direction", "NEUTRAL")
             qty = deal.get("qty", 0)
             
-            # 100% Plain Text - No bold, no italic, no escaping needed
             alert_text = (
                 f"DEAL ALERT: {sym}\n"
                 f"Direction: {direction}\n"

@@ -77,19 +77,27 @@ async def odx_cycle_loop():
                         strike_map = {}
                         symbol_lookup = {}
                         
+                        total_pe_oi, total_ce_oi = 0, 0
                         for item in raw_chain:
                             strike = int(item.get("strike_price") or 0)
                             if strike <= 0: continue
                             opt_type = item.get("option_type")
                             sym = item.get("symbol")
+                            oi = int(item.get("oi") or 0)
+                            
                             if strike not in strike_map: strike_map[strike] = {"ce": {}, "pe": {}}
                             
                             if opt_type == "CE":
-                                strike_map[strike]["ce"] = {"symbol": sym, "oi": item.get("oi", 0)}
+                                strike_map[strike]["ce"] = {"symbol": sym, "oi": oi}
                                 symbol_lookup[sym] = (strike, "CE")
+                                total_ce_oi += oi
                             elif opt_type == "PE":
-                                strike_map[strike]["pe"] = {"symbol": sym, "oi": item.get("oi", 0)}
+                                strike_map[strike]["pe"] = {"symbol": sym, "oi": oi}
                                 symbol_lookup[sym] = (strike, "PE")
+                                total_pe_oi += oi
+
+                        # FIX 3: Live PCR
+                        live_pcr = round(total_pe_oi / total_ce_oi, 2) if total_ce_oi > 0 else 0.91
 
                         temp_nifty_strikes = []
                         ce_buy_l, ce_sell_l, pe_buy_l, pe_sell_l = 0.0, 0.0, 0.0, 0.0
@@ -126,6 +134,10 @@ async def odx_cycle_loop():
                                 sig_deals = [d for d in deals if d.get("symbol", "")]
                                 if not sig_deals: return "----", "----", 0.0
                                 
+                                # FIX 1: Debug Buy/Sell verification
+                                buys = sum(float(d.get("qty") or 0.0) for d in sig_deals if d.get("direction") == "BUY")
+                                sells = sum(float(d.get("qty") or 0.0) for d in sig_deals if d.get("direction") == "SELL")
+                                
                                 d_buy_l  = sum(float(d.get("qty", 0)) * float(d.get("ltp", 0)) for d in sig_deals if d.get("direction") == "BUY") / 100000
                                 d_sell_l = sum(float(d.get("qty", 0)) * float(d.get("ltp", 0)) for d in sig_deals if d.get("direction") == "SELL") / 100000
                                 net_flow_l = d_buy_l - d_sell_l
@@ -137,11 +149,13 @@ async def odx_cycle_loop():
                                     pe_buy_l += d_buy_l
                                     pe_sell_l += d_sell_l
                                 
-                                buys = sum(float(d.get("qty") or 0.0) for d in sig_deals if d.get("direction") == "BUY")
-                                sells = sum(float(d.get("qty") or 0.0) for d in sig_deals if d.get("direction") == "SELL")
                                 agg = "BUY" if buys > sells else "SELL" if sells > buys else "----"
-                                participants = [d.get("participant") for d in sig_deals if d.get("participant") and d.get("participant") != "----"]
+                                
+                                # FIX 2: Better WHO selection
+                                participants = [d.get("participant") for d in sig_deals 
+                                               if d.get("participant") and d.get("participant") not in ("----", "")]
                                 who = max(set(participants), key=participants.count) if participants else "----"
+                                
                                 return agg, who, net_flow_l
 
                             ce_agg, ce_who, ce_pulse_l = get_agg_and_flow(ce_deals, "CE")
@@ -168,15 +182,12 @@ async def odx_cycle_loop():
                         bias_l = (ce_buy_l + pe_sell_l) - (ce_sell_l + pe_buy_l)
                         
                         odx_payload = {
-                            "time": str(current_time), "spot": float(spot), "atm": int(atm), "pcr": 0.91,
-                            "is_first_cycle": False, "strikes": strikes_data,
+                            "time": str(current_time), "spot": float(spot), "atm": int(atm), "pcr": live_pcr,
+                            "strikes": strikes_data,
                             "aggregator": {"aggregate_bias_l": float(bias_l), "ce_buy": round(float(ce_buy_l), 2), "ce_sell": round(float(ce_sell_l), 2), "pe_buy": round(float(pe_buy_l), 2), "pe_sell": round(float(pe_sell_l), 2)}
                         }
                         
-                        # FIX 2: Heartbeat Logging
-                        print(f"SENDING ODX: {len(strikes_data)} strikes bias={bias_l:.2f}L", flush=True)
-                        result = fyers_stream.notifier.send_odx_heartbeat(odx_payload)
-                        print(f"TG SEND RESULT: {result}", flush=True)
+                        fyers_stream.notifier.send_odx_heartbeat(odx_payload)
 
             except Exception as e: print(f"ODX Error: {e}")
         await asyncio.sleep(60)
@@ -243,11 +254,6 @@ async def lifespan(app: FastAPI):
         loop = asyncio.get_running_loop()
         fyers_stream = FyersDataStream(client_id, access_token, loop, broadcast_deal)
         
-        # FIX 5: Startup Test
-        print("🚀 Sending Telegram startup test...", flush=True)
-        test_res = fyers_stream.notifier.send_message("✅ Tick-Watch started successfully")
-        print(f"TG STARTUP TEST: {test_res}", flush=True)
-
         client = get_fyers_data_client(client_id, access_token)
         initial_symbols, _ = get_all_symbols_to_subscribe(client)
         fyers_stream.sub_queue = initial_symbols
