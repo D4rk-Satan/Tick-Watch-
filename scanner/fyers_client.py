@@ -33,14 +33,9 @@ class FyersDataStream:
         os.makedirs("logs/data", exist_ok=True)
 
     def on_message(self, message, *args):
-        """v8.5 High-Veracity Parser (Bid/Ask + OrderBook Volume)"""
+        """v8.6 Parallel Parser with Key Verification"""
         try:
             if not message: return
-            
-            # RAW MSG Logging (Confirming volume fields)
-            if time.time() % 30 < 1:
-                print(f"RAW MSG: {message}", flush=True)
-
             ticks = message if isinstance(message, list) else [message]
             
             for tick in ticks:
@@ -50,22 +45,18 @@ class FyersDataStream:
                 sym = tick.get("symbol") or tick.get("n")
                 if not sym: continue
                 
-                # PRICE & VOLUME
                 ltp = float(tick.get("ltp") or tick.get("lp") or 0.0)
                 ltq = int(tick.get("ltq") or tick.get("last_traded_qty") or 0)
                 total_vol = int(tick.get("vol") or tick.get("volume") or 0)
                 
-                # BID/ASK/ATP
-                # Fyers V3 keys: bid=bid, ask=ask, atp=avg_trade_price
                 bp = float(tick.get("bid") or tick.get("bp") or 0.0)
                 ap = float(tick.get("ask") or tick.get("ap") or 0.0)
                 atp = float(tick.get("atp") or tick.get("avg_trade_price") or ltp)
                 
-                # TOTAL ORDER BOOK (TBQ/TSQ)
+                # Step 3: Hardened TBQ/TSQ extraction
                 tbq = int(tick.get("tot_buy_qty") or tick.get("v", {}).get("tbq") or 0)
                 tsq = int(tick.get("tot_sell_qty") or tick.get("v", {}).get("tsq") or 0)
                 
-                # Volume Delta Fallback
                 if ltq == 0 and total_vol > 0:
                     last_vol = self.prev_volumes.get(sym, 0)
                     if last_vol > 0:
@@ -86,6 +77,10 @@ class FyersDataStream:
                     "tot_sell_qty": tsq
                 }
                 
+                # Diagnostic: Step 3
+                if time.time() % 60 < 1:
+                    print(f"RAW_TICK_KEYS: {list(raw_tick.keys())}", flush=True)
+
                 deal = self.engine.analyze_tick(raw_tick)
                 if deal:
                     if deal.get("qty") == 0 and ltq > 0: deal["qty"] = ltq
@@ -133,7 +128,7 @@ class FyersDataStream:
 
     def start(self):
         token_str = f"{self.client_id}:{self.access_token}"
-        print(f"🚀 Launching Isolated Dual-Socket: {self.client_id}")
+        print(f"🚀 Launching Isolated Dual-Socket for: {self.client_id}")
         
         self.index_ws = data_ws.FyersDataSocket(
             access_token=token_str, log_path="logs/index", litemode=False,

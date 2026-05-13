@@ -96,7 +96,6 @@ async def odx_cycle_loop():
                                 symbol_lookup[sym] = (strike, "PE")
                                 total_pe_oi += oi
 
-                        # FIX 3: Live PCR
                         live_pcr = round(total_pe_oi / total_ce_oi, 2) if total_ce_oi > 0 else 0.91
 
                         temp_nifty_strikes = []
@@ -134,12 +133,16 @@ async def odx_cycle_loop():
                                 sig_deals = [d for d in deals if d.get("symbol", "")]
                                 if not sig_deals: return "----", "----", 0.0
                                 
-                                # FIX 1: Debug Buy/Sell verification
-                                buys = sum(float(d.get("qty") or 0.0) for d in sig_deals if d.get("direction") == "BUY")
-                                sells = sum(float(d.get("qty") or 0.0) for d in sig_deals if d.get("direction") == "SELL")
+                                # Step 4: AGG_FLOW Debug
+                                directions = [d.get("direction") for d in sig_deals]
+                                print(f"AGG_FLOW {sym_type}: directions={set(directions)} total_deals={len(sig_deals)}", flush=True)
+
+                                # Step 4: Sanity Check Formula
+                                sell_deals = [d for d in sig_deals if d.get("direction") == "SELL"]
+                                buy_deals  = [d for d in sig_deals if d.get("direction") == "BUY"]
                                 
-                                d_buy_l  = sum(float(d.get("qty", 0)) * float(d.get("ltp", 0)) for d in sig_deals if d.get("direction") == "BUY") / 100000
-                                d_sell_l = sum(float(d.get("qty", 0)) * float(d.get("ltp", 0)) for d in sig_deals if d.get("direction") == "SELL") / 100000
+                                d_buy_l  = sum(float(d.get("qty", 0)) * float(d.get("ltp", 0)) for d in buy_deals)  / 100000
+                                d_sell_l = sum(float(d.get("qty", 0)) * float(d.get("ltp", 0)) for d in sell_deals) / 100000
                                 net_flow_l = d_buy_l - d_sell_l
                                 
                                 if sym_type == "CE":
@@ -149,9 +152,10 @@ async def odx_cycle_loop():
                                     pe_buy_l += d_buy_l
                                     pe_sell_l += d_sell_l
                                 
+                                buys = sum(float(d.get("qty") or 0.0) for d in buy_deals)
+                                sells = sum(float(d.get("qty") or 0.0) for d in sell_deals)
                                 agg = "BUY" if buys > sells else "SELL" if sells > buys else "----"
                                 
-                                # FIX 2: Better WHO selection
                                 participants = [d.get("participant") for d in sig_deals 
                                                if d.get("participant") and d.get("participant") not in ("----", "")]
                                 who = max(set(participants), key=participants.count) if participants else "----"
@@ -253,7 +257,7 @@ async def lifespan(app: FastAPI):
         global fyers_stream
         loop = asyncio.get_running_loop()
         fyers_stream = FyersDataStream(client_id, access_token, loop, broadcast_deal)
-        
+
         client = get_fyers_data_client(client_id, access_token)
         initial_symbols, _ = get_all_symbols_to_subscribe(client)
         fyers_stream.sub_queue = initial_symbols
