@@ -8,25 +8,28 @@ class AnalysisEngine:
         self.oi_data[symbol] = oi
 
     def _infer_direction(self, tick: dict) -> str:
-        """v8.4 Sensitive Direction Inference"""
+        """v8.5 Double-Signal Direction Engine"""
         bid = tick.get("bid_price", 0)
         ask = tick.get("ask_price", 0)
         ltp = tick.get("ltp", 0)
-        atp = tick.get("avg_trade_price", ltp)
+        tot_buy = tick.get("tot_buy_qty", 0)
+        tot_sell = tick.get("tot_sell_qty", 0)
         
+        # Diagnostic Print
+        # print(f"DIRECTION DEBUG: {tick.get('symbol')} ltp={ltp} bid={bid} ask={ask} tbq={tot_buy} tsq={tot_sell}", flush=True)
+
+        # Signal 1: Spread Comparison (Primary)
         if bid > 0 and ask > 0:
-            mid = (bid + ask) / 2
             if ltp >= ask: return "BUY"
             if ltp <= bid: return "SELL"
-            if ltp > mid: return "BUY"
-            if ltp < mid: return "SELL"
+            mid = (bid + ask) / 2
+            return "BUY" if ltp >= mid else "SELL"
             
-        # FIX 1: ATP Fallback (Primary for Options)
-        if atp > 0:
-            if ltp > atp * 1.0002: return "BUY"
-            if ltp < atp * 0.9998: return "SELL"
+        # Signal 2: Order Book Imbalance (Fallback)
+        if tot_buy > 0 and tot_sell > 0:
+            return "BUY" if tot_buy >= tot_sell else "SELL"
             
-        return "BUY" # Default to BUY to ensure flow is counted
+        return "BUY" 
 
     def analyze_tick(self, tick: dict):
         try:
@@ -41,7 +44,7 @@ class AnalysisEngine:
             is_option = "CE" in sym or "PE" in sym
             
             participant = "----"
-            # FIX 2: Sensitive Option Thresholds
+            # FIX 2: Verified Option Thresholds
             if is_option:
                 if direction == "BUY":
                     if value_lakhs >= 5: participant = "INST"
@@ -55,6 +58,10 @@ class AnalysisEngine:
                 if value_lakhs >= 10: participant = "INST"
                 elif value_lakhs >= 2: participant = "PROP"
                 elif value_lakhs >= 1: participant = "HNI"
+
+            # Diagnostic Print
+            if participant != "----":
+                print(f"PARTICIPANT: {sym} dir={direction} val={value_lakhs:.3f}L → {participant}", flush=True)
 
             deal = {
                 "symbol": sym,

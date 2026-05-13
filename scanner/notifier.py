@@ -22,7 +22,7 @@ class TelegramNotifier:
             return None
 
     def send_odx_heartbeat(self, data: dict):
-        """v8.4 Rich Table Heartbeat"""
+        """v8.5 Precise Table Heartbeat"""
         try:
             time_str = data.get("time", "00:00")
             spot = data.get("spot", 0.0)
@@ -30,11 +30,11 @@ class TelegramNotifier:
             pcr = data.get("pcr", 0.91)
             strikes = data.get("strikes", [])
             
-            # FIX 4: Rich Header
+            # FIX 3: Precise Header Alignment
             header = (
                 f"ODX Pulse • {time_str}\n"
                 f"SPOT: {spot:.1f} | ATM: {atm} | PCR: {pcr:.2f}\n\n"
-                f"{'STRIKE':<7} | {'CE (L)':<7} {'C-A':<5} | {'PE (L)':<7} {'P-A':<5} | {'WHO':<5} | SIGNAL\n"
+                f"{'STRIKE':<7} | {'CE(L)':<8} {'CA':<5}| {'PE(L)':<8} {'PA':<5}| {'WHO':<5}| SIG\n"
                 f"----------------------------------------------------------\n"
             )
             
@@ -54,7 +54,8 @@ class TelegramNotifier:
                 who = s.get('who', '----')
                 signal = s.get('label', '----')
                 
-                row = f"{strike_str:<7} | {ce_fmt:<7} {c_agg:<5} | {pe_fmt:<7} {p_agg:<5} | {who:<5} | {signal}\n"
+                # FIX 3: Precise Row Alignment
+                row = f"{strike_str:<7} | {ce_fmt:<8} {c_agg:<5}| {pe_fmt:<8} {p_agg:<5}| {who:<5}| {signal}\n"
                 body += row
 
             agg = data.get("aggregator", {})

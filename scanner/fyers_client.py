@@ -33,12 +33,13 @@ class FyersDataStream:
         os.makedirs("logs/data", exist_ok=True)
 
     def on_message(self, message, *args):
-        """v8.0 Data-Unlock Parser (*args to catch extra SDK arguments)"""
+        """v8.5 High-Veracity Parser (Bid/Ask + OrderBook Volume)"""
         try:
             if not message: return
             
-            # Step 1: RAW Diagnostic Print (Confirmed Fixed)
-            print(f"RAW MSG: {message}", flush=True)
+            # RAW MSG Logging (Confirming volume fields)
+            if time.time() % 30 < 1:
+                print(f"RAW MSG: {message}", flush=True)
 
             ticks = message if isinstance(message, list) else [message]
             
@@ -49,10 +50,22 @@ class FyersDataStream:
                 sym = tick.get("symbol") or tick.get("n")
                 if not sym: continue
                 
+                # PRICE & VOLUME
                 ltp = float(tick.get("ltp") or tick.get("lp") or 0.0)
                 ltq = int(tick.get("ltq") or tick.get("last_traded_qty") or 0)
                 total_vol = int(tick.get("vol") or tick.get("volume") or 0)
                 
+                # BID/ASK/ATP
+                # Fyers V3 keys: bid=bid, ask=ask, atp=avg_trade_price
+                bp = float(tick.get("bid") or tick.get("bp") or 0.0)
+                ap = float(tick.get("ask") or tick.get("ap") or 0.0)
+                atp = float(tick.get("atp") or tick.get("avg_trade_price") or ltp)
+                
+                # TOTAL ORDER BOOK (TBQ/TSQ)
+                tbq = int(tick.get("tot_buy_qty") or tick.get("v", {}).get("tbq") or 0)
+                tsq = int(tick.get("tot_sell_qty") or tick.get("v", {}).get("tsq") or 0)
+                
+                # Volume Delta Fallback
                 if ltq == 0 and total_vol > 0:
                     last_vol = self.prev_volumes.get(sym, 0)
                     if last_vol > 0:
@@ -63,8 +76,14 @@ class FyersDataStream:
                 if ltp == 0.0: continue
 
                 raw_tick = {
-                    "symbol": sym, "ltp": ltp, "last_traded_qty": ltq,
-                    "bid_price": ltp, "ask_price": ltp, "avg_trade_price": ltp
+                    "symbol": sym, 
+                    "ltp": ltp, 
+                    "last_traded_qty": ltq,
+                    "bid_price": bp, 
+                    "ask_price": ap, 
+                    "avg_trade_price": atp,
+                    "tot_buy_qty": tbq,
+                    "tot_sell_qty": tsq
                 }
                 
                 deal = self.engine.analyze_tick(raw_tick)
@@ -83,16 +102,14 @@ class FyersDataStream:
 
     def on_open_index(self):
         print("✅ [INDEX] CHANNEL CONNECTED", flush=True)
-        time.sleep(1) # FIX 2: Delay for stabilization
+        time.sleep(1)
         test_syms = ["NSE:NIFTY50-INDEX", "NSE:NIFTYBANK-INDEX"]
-        # FIX 1: Using SymbolUpdate
         self.index_ws.subscribe(symbols=test_syms, data_type="SymbolUpdate")
-        print(f"TEST SUBSCRIPTION SENT: {test_syms}", flush=True)
 
     def on_open_data(self):
         print("✅ [DATA] CHANNEL CONNECTED", flush=True)
         self.is_connected = True
-        time.sleep(1) # FIX 2: Delay for stabilization
+        time.sleep(1)
         if self.sub_queue:
             q = [s for s in self.sub_queue if "INDEX" not in s]
             print(f"🚀 Initializing Data Stream for {len(q)} Symbols...", flush=True)
@@ -107,11 +124,7 @@ class FyersDataStream:
         CHUNK_SIZE = 20
         for i in range(0, len(clean_symbols), CHUNK_SIZE):
             chunk = clean_symbols[i : i + CHUNK_SIZE]
-            # FIX 4: Sample Print
-            print(f"SUBSCRIBING SAMPLE: {chunk[:3]}", flush=True)
-            
             if self.is_connected and self.data_ws:
-                # FIX 1: Using SymbolUpdate
                 self.data_ws.subscribe(symbols=chunk, data_type="SymbolUpdate")
                 time.sleep(1)
             else:
@@ -122,14 +135,12 @@ class FyersDataStream:
         token_str = f"{self.client_id}:{self.access_token}"
         print(f"🚀 Launching Isolated Dual-Socket: {self.client_id}")
         
-        # 1. INDEX SOCKET
         self.index_ws = data_ws.FyersDataSocket(
             access_token=token_str, log_path="logs/index", litemode=False,
             on_connect=self.on_open_index, on_close=self.on_close,
             on_error=self.on_error, on_message=self.on_message
         )
         
-        # 2. DATA SOCKET
         self.data_ws = data_ws.FyersDataSocket(
             access_token=token_str, log_path="logs/data", litemode=False,
             on_connect=self.on_open_data, on_close=self.on_close,
