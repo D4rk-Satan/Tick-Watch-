@@ -6,14 +6,21 @@ from typing import Dict, Optional
 
 class AnalysisEngine:
     def __init__(self):
-        self.oi_data = {}
-        # Feature 1: OI History for spike detection
-        self.oi_history: Dict[str, deque] = {}
-        # Feature 2: Pinning history tracking
-        self.pin_history: Dict[str, deque] = {}  # {symbol: deque([ltp1, ltp2...], maxlen=30)}
-        self.pin_oi_start: Dict[str, int] = {}   # OI at start of pin window
-        # Iceberg tracking
+        # State Management (v9.1 Restored)
+        self.rolling_qty: Dict[str, deque] = {}
+        self.rolling_ticks: Dict[str, deque] = {}
+        self.buy_sell_pressure: Dict[str, deque] = {}
         self.active_sequences = {}
+
+        # OI tracking
+        self.oi_data = {}
+        self.oi_history: Dict[str, deque] = {}
+        self.last_oi_poll_time: Dict[str, float] = {}
+        self.pcr_history: Dict[str, deque] = {}
+
+        # Pin detection
+        self.pin_history: Dict[str, deque] = {}
+        self.pin_oi_start: Dict[str, int] = {}
 
     def update_oi(self, symbol: str, oi: int):
         self.oi_data[symbol] = oi
@@ -22,7 +29,7 @@ class AnalysisEngine:
         self.oi_history[symbol].append(oi)
 
     def detect_oi_spike(self, symbol: str) -> dict:
-        """v9.0 Feature 1: Detects sudden OI buildup at a strike"""
+        """Detects sudden OI buildup at a strike"""
         if symbol not in self.oi_history or len(self.oi_history[symbol]) < 2:
             return {"spike": False}
         
@@ -35,7 +42,6 @@ class AnalysisEngine:
         pct_change = ((latest - oldest) / oldest) * 100
         abs_change = latest - oldest
         
-        # Spike = >15% OI increase across last 60 seconds
         if pct_change >= 15 and abs_change > 500:
             return {
                 "spike": True,
@@ -47,7 +53,7 @@ class AnalysisEngine:
         return {"spike": False}
 
     def detect_pin(self, symbol: str, ltp: float, current_oi: int) -> dict:
-        """v9.0 Feature 2: Detects MM defending a strike level — price stuck + OI growing"""
+        """Detects MM defending a strike level — price stuck + OI growing"""
         if symbol not in self.pin_history:
             self.pin_history[symbol] = deque(maxlen=30)
             self.pin_oi_start[symbol] = current_oi
@@ -61,7 +67,6 @@ class AnalysisEngine:
         price_range_pct = (max(prices) - min(prices)) / min(prices) * 100
         oi_growth = current_oi - self.pin_oi_start.get(symbol, current_oi)
         
-        # Pin = price oscillating within 0.5% for 10+ ticks AND OI increasing
         if price_range_pct <= 0.5 and oi_growth > 0:
             strike = None
             match = re.search(r'(\d+)(CE|PE)$', symbol)
@@ -76,14 +81,12 @@ class AnalysisEngine:
                 "meaning": f"MM defending {strike} — strong magnet level"
             }
         
-        # Reset OI baseline every 30 ticks
         if len(self.pin_history[symbol]) == 30:
             self.pin_oi_start[symbol] = current_oi
         
         return {"pin": False}
 
     def _process_iceberg(self, symbol: str, ltp: float, ltq: int, current_time: float) -> Optional[dict]:
-        """v9.0 Feature 3: Catching quantity rotation across slightly different prices"""
         seq = self.active_sequences.get(symbol)
         
         if not seq:
@@ -96,7 +99,6 @@ class AnalysisEngine:
         time_gap = current_time - seq["last_time"]
         price_deviation = abs(seq["price"] - ltp) / seq["price"]
         
-        # Extended: allow up to 0.1% price deviation (quantity rotation)
         if time_gap > 2.0 or price_deviation > 0.001:
             self.active_sequences[symbol] = {
                 "price": ltp, "qtys": [ltq], "times": [current_time],
@@ -160,7 +162,6 @@ class AnalysisEngine:
             score = 3
             details = []
             
-            # Iceberg Detection
             iceberg = self._process_iceberg(sym, ltp, ltq, time.time())
             if iceberg:
                 score += 2
