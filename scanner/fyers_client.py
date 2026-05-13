@@ -28,26 +28,25 @@ class FyersDataStream:
         self.sub_queue = []
 
     def on_message(self, message):
-        """Full Mode Parser (v6.3)"""
+        """Clean Data Parser (v6.4)"""
         try:
             if not message: return
             ticks = message if isinstance(message, list) else [message]
             
             for tick in ticks:
-                # DEBUG: Inspect the first few packets
+                # DEBUG: First 2 seconds of every minute
                 if time.time() % 60 < 2:
                     print(f"DEBUG RAW: {tick}")
 
                 if isinstance(tick, dict) and tick.get("type") in ["cn", "lit", "ful", "sub"]:
-                    print(f"DEBUG System: {tick}")
                     continue
                 
-                # In Full Mode, V3 uses 'symbol' and 'ltp' / 'ltq'
                 sym = tick.get("symbol") or tick.get("n")
                 if not sym: continue
                 
-                ltp = float(tick.get("ltp") or tick.get("lp") or tick.get("v", {}).get("lp") or 0.0)
-                ltq = int(tick.get("ltq") or tick.get("last_traded_qty") or tick.get("v", {}).get("ltq") or 0)
+                # Extract Price and Quantity
+                ltp = float(tick.get("ltp") or tick.get("lp") or 0.0)
+                ltq = int(tick.get("ltq") or tick.get("last_traded_qty") or 0)
                 
                 if ltp == 0.0: continue
 
@@ -74,16 +73,17 @@ class FyersDataStream:
         print("✅ Fyers WS Connected!")
         self.is_connected = True
         
-        # PROVEN NAMES FOR V3
-        proven_symbols = ["NSE:RELIANCE-EQ", "NSE:NIFTY50-INDEX", "NSE:NIFTYBANK-INDEX"]
-        print(f"🚀 Subscribing to PROVEN symbols: {proven_symbols}")
-        self.ws.subscribe(symbols=proven_symbols, data_type="symbolData")
+        # BATCH 1: ONLY INDICES (To prevent infection of other symbols)
+        indices = ["NSE:NIFTY50-INDEX", "NSE:NIFTYBANK-INDEX"]
+        print(f"🚀 Subscribing to INDICES: {indices}")
+        self.ws.subscribe(symbols=indices, data_type="symbolData")
         
         def delayed_sub():
-            time.sleep(5)
+            time.sleep(5) # Give indices time to settle
             if self.sub_queue:
-                others = [s for s in self.sub_queue if s not in proven_symbols]
-                print(f"🚀 Now Subscribing to remaining {len(others)} symbols in chunks...")
+                # BATCH 2: STOCKS AND OPTIONS (In small chunks)
+                others = [s for s in self.sub_queue if s not in indices]
+                print(f"🚀 Subscribing to {len(others)} Data Symbols...")
                 self.subscribe_symbols(others)
                 self.sub_queue = []
         
@@ -93,7 +93,6 @@ class FyersDataStream:
         if not symbols: return
         valid_symbols = list(set([s for s in symbols if s and isinstance(s, str)]))
         
-        # SAFETY: Chunk size of 10 with 1s delay prevents buffer scrambling
         CHUNK_SIZE = 10
         for i in range(0, len(valid_symbols), CHUNK_SIZE):
             chunk = valid_symbols[i : i + CHUNK_SIZE]
@@ -111,7 +110,7 @@ class FyersDataStream:
         self.ws = data_ws.FyersDataSocket(
             access_token=token_str,
             log_path=os.getcwd(),
-            litemode=False, # BACK TO FULL MODE FOR VOLUME
+            litemode=False,
             reconnect=True,
             on_connect=self.on_open,
             on_close=self.on_close,
