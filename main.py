@@ -123,12 +123,19 @@ async def odx_cycle_loop():
                             
                             def get_agg_and_flow(deals, sym_type):
                                 nonlocal ce_buy_cr, ce_sell_cr, pe_buy_cr, pe_sell_cr
-                                if not deals: return "----", "----", 0.0
-                                buys = sum(float(d.get("qty") or 0.0) for d in deals if d.get("direction") == "BUY")
-                                sells = sum(float(d.get("qty") or 0.0) for d in deals if d.get("direction") == "SELL")
+                                sig_deals = [d for d in deals if d.get("score", 0) >= 4]
+                                if not sig_deals: return "----", "----", 0.0
                                 
-                                d_buy_cr = sum(float(d.get("qty") or 0.0)*float(d.get("ltp") or 0.0) for d in deals if d.get("direction")=="BUY") / 10000000
-                                d_sell_cr = sum(float(d.get("qty") or 0.0)*float(d.get("ltp") or 0.0) for d in deals if d.get("direction")=="SELL") / 10000000
+                                # Detect lot size from symbol
+                                sample_sym = sig_deals[0].get("symbol", "")
+                                lot_size = 15 if "BANKNIFTY" in sample_sym else 50
+                                divisor = lot_size * 10000000
+                                
+                                buys = sum(float(d.get("qty") or 0.0) for d in sig_deals if d.get("direction") == "BUY")
+                                sells = sum(float(d.get("qty") or 0.0) for d in sig_deals if d.get("direction") == "SELL")
+                                
+                                d_buy_cr = sum(float(d.get("qty") or 0.0)*float(d.get("ltp") or 0.0) for d in sig_deals if d.get("direction")=="BUY") / divisor
+                                d_sell_cr = sum(float(d.get("qty") or 0.0)*float(d.get("ltp") or 0.0) for d in sig_deals if d.get("direction")=="SELL") / divisor
                                 net_flow_cr = d_buy_cr - d_sell_cr
                                 
                                 if sym_type == "CE":
@@ -139,7 +146,7 @@ async def odx_cycle_loop():
                                     pe_sell_cr += d_sell_cr
                                 
                                 agg = "BUY" if buys > sells else "SELL" if sells > buys else "----"
-                                participants = [d.get("participant") for d in deals if d.get("participant") and d.get("participant") != "----"]
+                                participants = [d.get("participant") for d in sig_deals if d.get("participant") and d.get("participant") != "----"]
                                 who = max(set(participants), key=participants.count) if participants else "----"
                                 return agg, who, net_flow_cr
 

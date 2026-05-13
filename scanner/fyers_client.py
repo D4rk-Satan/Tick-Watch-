@@ -64,11 +64,11 @@ class FyersDataStream:
 
                 raw_tick = {
                     "symbol": sym, "ltp": ltp, "last_traded_qty": ltq,
-                    "bid_price": ltp, "ask_price": ltp # Fallback for Lite
+                    "bid_price": ltp, "ask_price": ltp
                 }
                 
                 deal = self.engine.analyze_tick(raw_tick)
-                if deal:
+                if deal and deal.get("score", 0) >= 4:
                     asyncio.run_coroutine_threadsafe(self.broadcast_callback(deal), self.loop)
                     
         except Exception as e:
