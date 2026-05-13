@@ -8,29 +8,26 @@ class AnalysisEngine:
         self.oi_data[symbol] = oi
 
     def _infer_direction(self, tick: dict) -> str:
-        """v8.6 Hardened Direction Engine (Step 2)"""
-        bid      = float(tick.get("bid_price") or 0)
-        ask      = float(tick.get("ask_price") or 0)
-        ltp      = float(tick.get("ltp") or 0)
-        tot_buy  = int(tick.get("tot_buy_qty") or 0)
-        tot_sell = int(tick.get("tot_sell_qty") or 0)
+        """v8.7 Pure Tick Direction Engine"""
+        bid = float(tick.get("bid_price") or 0)
+        ask = float(tick.get("ask_price") or 0)
+        ltp = float(tick.get("ltp") or 0)
+        atp = float(tick.get("avg_trade_price") or ltp)
 
         if bid > 0 and ask > 0 and ltp > 0:
-            if ltp >= ask:
-                return "BUY"
-            if ltp <= bid:
-                return "SELL"
-            mid = (bid + ask) / 2.0
-            if ltp > mid:
-                return "BUY"
-            if ltp < mid:
-                return "SELL"
-            return "SELL"  # exactly at mid = passive = SELL
-
-        if tot_buy > 0 or tot_sell > 0:
-            return "BUY" if tot_buy > tot_sell else "SELL"
-
-        return "SELL"  # default SELL not BUY — balances the bias
+            if ltp >= ask: direction = "BUY"
+            elif ltp <= bid: direction = "SELL"
+            else:
+                mid = (bid + ask) / 2.0
+                direction = "BUY" if ltp > mid else "SELL"
+        else:
+            # Fallback to ATP vs LTP
+            if ltp > atp: direction = "BUY"
+            elif ltp < atp: direction = "SELL"
+            else: direction = "NEUTRAL"
+            
+        # print(f"DIR: ltp={ltp} bid={bid} ask={ask} mid={((bid+ask)/2) if bid+ask>0 else 0:.2f} → {direction}", flush=True)
+        return direction
 
     def analyze_tick(self, tick: dict):
         try:
@@ -40,10 +37,7 @@ class AnalysisEngine:
             
             if not sym or not ltp or ltq <= 0: return None
             
-            # Step 1: DIR_CHECK Print
             direction = self._infer_direction(tick)
-            print(f"DIR_CHECK: {sym} ltp={ltp} bid={tick.get('bid_price')} ask={tick.get('ask_price')} tot_buy={tick.get('tot_buy_qty')} tot_sell={tick.get('tot_sell_qty')} → {direction}", flush=True)
-
             value_lakhs = (ltp * ltq) / 100000
             is_option = "CE" in sym or "PE" in sym
             

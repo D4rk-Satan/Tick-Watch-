@@ -33,7 +33,7 @@ class FyersDataStream:
         os.makedirs("logs/data", exist_ok=True)
 
     def on_message(self, message, *args):
-        """v8.6 Parallel Parser with Key Verification"""
+        """v8.7 Tick-Focused Parser"""
         try:
             if not message: return
             ticks = message if isinstance(message, list) else [message]
@@ -53,10 +53,6 @@ class FyersDataStream:
                 ap = float(tick.get("ask") or tick.get("ap") or 0.0)
                 atp = float(tick.get("atp") or tick.get("avg_trade_price") or ltp)
                 
-                # Step 3: Hardened TBQ/TSQ extraction
-                tbq = int(tick.get("tot_buy_qty") or tick.get("v", {}).get("tbq") or 0)
-                tsq = int(tick.get("tot_sell_qty") or tick.get("v", {}).get("tsq") or 0)
-                
                 if ltq == 0 and total_vol > 0:
                     last_vol = self.prev_volumes.get(sym, 0)
                     if last_vol > 0:
@@ -66,21 +62,16 @@ class FyersDataStream:
                 
                 if ltp == 0.0: continue
 
+                # FIX: Removing cumulative TBQ/TSQ as they are misleading
                 raw_tick = {
                     "symbol": sym, 
                     "ltp": ltp, 
                     "last_traded_qty": ltq,
                     "bid_price": bp, 
                     "ask_price": ap, 
-                    "avg_trade_price": atp,
-                    "tot_buy_qty": tbq,
-                    "tot_sell_qty": tsq
+                    "avg_trade_price": atp
                 }
                 
-                # Diagnostic: Step 3
-                if time.time() % 60 < 1:
-                    print(f"RAW_TICK_KEYS: {list(raw_tick.keys())}", flush=True)
-
                 deal = self.engine.analyze_tick(raw_tick)
                 if deal:
                     if deal.get("qty") == 0 and ltq > 0: deal["qty"] = ltq
@@ -128,7 +119,7 @@ class FyersDataStream:
 
     def start(self):
         token_str = f"{self.client_id}:{self.access_token}"
-        print(f"🚀 Launching Isolated Dual-Socket for: {self.client_id}")
+        print(f"🚀 Launching Isolated Dual-Socket: {self.client_id}")
         
         self.index_ws = data_ws.FyersDataSocket(
             access_token=token_str, log_path="logs/index", litemode=False,

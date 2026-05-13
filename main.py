@@ -133,11 +133,6 @@ async def odx_cycle_loop():
                                 sig_deals = [d for d in deals if d.get("symbol", "")]
                                 if not sig_deals: return "----", "----", 0.0
                                 
-                                # Step 4: AGG_FLOW Debug
-                                directions = [d.get("direction") for d in sig_deals]
-                                print(f"AGG_FLOW {sym_type}: directions={set(directions)} total_deals={len(sig_deals)}", flush=True)
-
-                                # Step 4: Sanity Check Formula
                                 sell_deals = [d for d in sig_deals if d.get("direction") == "SELL"]
                                 buy_deals  = [d for d in sig_deals if d.get("direction") == "BUY"]
                                 
@@ -166,8 +161,15 @@ async def odx_cycle_loop():
                             pe_agg, pe_who, pe_pulse_l = get_agg_and_flow(pe_deals, "PE")
                             final_who = ce_who if ce_who != "----" else pe_who
 
-                            label = "Straddle" if ce_pulse_l != 0 and pe_pulse_l != 0 else "Call write" if ce_pulse_l < 0 else "Put write" if pe_pulse_l < 0 else "Accumulate"
-                            if abs(ce_pulse_l) > 1.0 or abs(pe_pulse_l) > 1.0: label += "⚡"
+                            # FIX: Advanced Strategy Labeling
+                            if abs(ce_pulse_l) > 0.1 and abs(pe_pulse_l) > 0.1:
+                                if ce_pulse_l > 0 and pe_pulse_l > 0: label = "Straddle Buy⚡"
+                                elif ce_pulse_l < 0 and pe_pulse_l < 0: label = "Straddle Write⚡"
+                                elif ce_pulse_l > 0 and pe_pulse_l < 0: label = "Bull Spread⚡"
+                                elif ce_pulse_l < 0 and pe_pulse_l > 0: label = "Bear Spread⚡"
+                                else: label = "Neutral Play"
+                            else:
+                                label = "Accumulate" if (ce_pulse_l + pe_pulse_l) > 0 else "Distribute"
                             
                             strikes_data.append({
                                 "strike": int(strike), "is_atm": strike == atm,
@@ -257,7 +259,7 @@ async def lifespan(app: FastAPI):
         global fyers_stream
         loop = asyncio.get_running_loop()
         fyers_stream = FyersDataStream(client_id, access_token, loop, broadcast_deal)
-
+        
         client = get_fyers_data_client(client_id, access_token)
         initial_symbols, _ = get_all_symbols_to_subscribe(client)
         fyers_stream.sub_queue = initial_symbols
