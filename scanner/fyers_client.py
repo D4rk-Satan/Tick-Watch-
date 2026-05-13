@@ -29,18 +29,16 @@ class FyersDataStream:
         self.is_connected = False
         self.sub_queue = []
         
-        # Create separate log dirs for each socket
         os.makedirs("logs/index", exist_ok=True)
         os.makedirs("logs/data", exist_ok=True)
 
-    def on_message(self, message):
-        """Hardened Parallel Parser (v7.3)"""
+    def on_message(self, message, *args):
+        """v8.0 Data-Unlock Parser (*args to catch extra SDK arguments)"""
         try:
             if not message: return
             
-            # RAW MSG Logging (Every 30s)
-            if time.time() % 30 < 1:
-                print(f"RAW MSG: {message}", flush=True)
+            # Step 1: RAW Diagnostic Print (Confirmed Fixed)
+            print(f"RAW MSG: {message}", flush=True)
 
             ticks = message if isinstance(message, list) else [message]
             
@@ -51,12 +49,10 @@ class FyersDataStream:
                 sym = tick.get("symbol") or tick.get("n")
                 if not sym: continue
                 
-                # V3 Field Extraction
                 ltp = float(tick.get("ltp") or tick.get("lp") or 0.0)
                 ltq = int(tick.get("ltq") or tick.get("last_traded_qty") or 0)
                 total_vol = int(tick.get("vol") or tick.get("volume") or 0)
                 
-                # Volume Delta Fallback
                 if ltq == 0 and total_vol > 0:
                     last_vol = self.prev_volumes.get(sym, 0)
                     if last_vol > 0:
@@ -73,7 +69,6 @@ class FyersDataStream:
                 
                 deal = self.engine.analyze_tick(raw_tick)
                 if deal:
-                    # Sync quantity
                     if deal.get("qty") == 0 and ltq > 0: deal["qty"] = ltq
                     asyncio.run_coroutine_threadsafe(self.broadcast_callback(deal), self.loop)
                     
@@ -87,17 +82,20 @@ class FyersDataStream:
         print("🏠 Fyers WS Connection Closed")
 
     def on_open_index(self):
-        print("✅ [INDEX] CHANNEL READY")
-        indices = ["NSE:NIFTY50-INDEX", "NSE:NIFTYBANK-INDEX"]
-        if self.index_ws:
-            self.index_ws.subscribe(symbols=indices, data_type="symbolData")
+        print("✅ [INDEX] CHANNEL CONNECTED", flush=True)
+        time.sleep(1) # FIX 2: Delay for stabilization
+        test_syms = ["NSE:NIFTY50-INDEX", "NSE:NIFTYBANK-INDEX"]
+        # FIX 1: Using SymbolUpdate
+        self.index_ws.subscribe(symbols=test_syms, data_type="SymbolUpdate")
+        print(f"TEST SUBSCRIPTION SENT: {test_syms}", flush=True)
 
     def on_open_data(self):
-        print("✅ [DATA] CHANNEL READY")
+        print("✅ [DATA] CHANNEL CONNECTED", flush=True)
         self.is_connected = True
+        time.sleep(1) # FIX 2: Delay for stabilization
         if self.sub_queue:
             q = [s for s in self.sub_queue if "INDEX" not in s]
-            print(f"🚀 Initializing Data Stream for {len(q)} Symbols...")
+            print(f"🚀 Initializing Data Stream for {len(q)} Symbols...", flush=True)
             self.subscribe_symbols(q)
             self.sub_queue = []
 
@@ -109,8 +107,12 @@ class FyersDataStream:
         CHUNK_SIZE = 20
         for i in range(0, len(clean_symbols), CHUNK_SIZE):
             chunk = clean_symbols[i : i + CHUNK_SIZE]
+            # FIX 4: Sample Print
+            print(f"SUBSCRIBING SAMPLE: {chunk[:3]}", flush=True)
+            
             if self.is_connected and self.data_ws:
-                self.data_ws.subscribe(symbols=chunk, data_type="symbolData")
+                # FIX 1: Using SymbolUpdate
+                self.data_ws.subscribe(symbols=chunk, data_type="SymbolUpdate")
                 time.sleep(1)
             else:
                 self.sub_queue.extend(chunk)
@@ -118,7 +120,7 @@ class FyersDataStream:
 
     def start(self):
         token_str = f"{self.client_id}:{self.access_token}"
-        print(f"🚀 Launching Hardened Dual-Socket: {self.client_id}")
+        print(f"🚀 Launching Isolated Dual-Socket: {self.client_id}")
         
         # 1. INDEX SOCKET
         self.index_ws = data_ws.FyersDataSocket(
@@ -135,5 +137,5 @@ class FyersDataStream:
         )
         
         threading.Thread(target=self.index_ws.connect, daemon=True).start()
-        time.sleep(2) # Staggered start
+        time.sleep(2)
         threading.Thread(target=self.data_ws.connect, daemon=True).start()
