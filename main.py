@@ -77,12 +77,12 @@ async def check_instant_alerts(notifier, strikes_data: list, spot: float, atm: i
 async def odx_cycle_loop():
     global fyers_stream, deal_cache, nifty_strikes_to_sub
     
-    # v9.9: Clear Startup Warmup
+    # Startup Warmup
     print("ODX: Waiting 30s for WS warmup...", flush=True)
     await asyncio.sleep(30)
 
     while True:
-        # v9.9: Clear Root Heartbeat
+        # Root Heartbeat
         print(f"ODX LOOP TICK: {get_ist_time()}", flush=True)
         
         try:
@@ -150,6 +150,7 @@ async def odx_cycle_loop():
                                     if d_strike not in deals_by_strike: deals_by_strike[d_strike] = {"CE": [], "PE": []}
                                     deals_by_strike[d_strike][d_type].append(d)
 
+                            # v10.0: Independent Accumulation
                             ce_buy_cr = ce_sell_cr = pe_buy_cr = pe_sell_cr = 0.0
 
                             for strike in sorted(strike_map.keys()):
@@ -182,10 +183,18 @@ async def odx_cycle_loop():
                                             if d.get("participant") and d.get("participant") not in ("----", None, "")]
                                     who = max(set(parts), key=parts.count) if parts else "----"
 
+                                    # v10.0: Independent Side-by-Side Accumulation
                                     if sym_type == "CE":
-                                        ce_buy_cr += d_buy_l; ce_sell_cr += d_sell_l; ce_agg, ce_who, ce_pulse_cr = agg, who, net_cr
+                                        ce_buy_cr += d_buy_l
+                                        ce_sell_cr += d_sell_l
+                                        ce_agg, ce_who, ce_pulse_cr = agg, who, net_cr
                                     else:
-                                        pe_buy_cr += d_buy_l; pe_sell_cr += d_sell_l; pe_agg, pe_who, pe_pulse_cr = agg, who, net_cr
+                                        pe_buy_cr += d_buy_l
+                                        pe_sell_cr += d_sell_l
+                                        pe_agg, pe_who, pe_pulse_cr = agg, who, net_cr
+                                    
+                                    # v10.0: Per-Strike Debug
+                                    print(f"ACCUM {sym_type} strike={strike}: buy={d_buy_l:.2f} sell={d_sell_l:.2f} | totals: ce_buy={ce_buy_cr:.1f} ce_sell={ce_sell_cr:.1f} pe_buy={pe_buy_cr:.1f} pe_sell={pe_sell_cr:.1f}", flush=True)
 
                                 if ce_pulse_cr != 0 and pe_pulse_cr != 0:
                                     if ce_pulse_cr > 0 and pe_pulse_cr < 0:   label = "Bull Spread⚡"
@@ -207,9 +216,10 @@ async def odx_cycle_loop():
 
                             print(f"ODX LOOP DONE: {len(strikes_data)} strikes built", flush=True)
 
-                            ce_net = ce_buy_cr - ce_sell_cr
-                            pe_net = pe_buy_cr - pe_sell_cr
-                            bias_cr = ce_net - pe_net
+                            # v10.0: High-Fidelity Bias Formula
+                            # Bullish when: (Call Buying) + (Put Selling)
+                            # Bearish when: (Call Selling) + (Put Buying)
+                            bias_cr = (ce_buy_cr - ce_sell_cr) + (pe_sell_cr - pe_buy_cr)
 
                             print(f"AGGREGATOR DEBUG: ce_buy={ce_buy_cr:.1f} ce_sell={ce_sell_cr:.1f} pe_buy={pe_buy_cr:.1f} pe_sell={pe_sell_cr:.1f} bias={bias_cr:.1f}", flush=True)
 
@@ -244,7 +254,6 @@ async def odx_cycle_loop():
             print(f"ODX CRASH: {type(e).__name__}: {e}", flush=True)
             traceback.print_exc()
 
-        # v9.9: Clear Root Sleep
         await asyncio.sleep(60)
 
 async def rotation_cycle_loop():
