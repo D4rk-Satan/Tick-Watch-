@@ -77,12 +77,16 @@ async def check_instant_alerts(notifier, strikes_data: list, spot: float, atm: i
 async def odx_cycle_loop():
     global fyers_stream, deal_cache, nifty_strikes_to_sub
     
-    while True:
-        # v9.7: Heartbeat Print
-        print(f"ODX LOOP TICK: {get_ist_time()}", flush=True)
+    # v9.8: Startup Warmup
+    print("ODX: Waiting 30s for WS to connect before first cycle...", flush=True)
+    await asyncio.sleep(30)
 
-        if fyers_stream and fyers_stream.engine:
-            try:
+    while True:
+        # v9.8: Root-level Heartbeat
+        print(f"ODX LOOP TICK: {get_ist_time()}", flush=True)
+        
+        try:
+            if fyers_stream and fyers_stream.engine:
                 ce_buy_cr = ce_sell_cr = pe_buy_cr = pe_sell_cr = 0.0
                 bias_cr = 0.0
                 strikes_data = []
@@ -94,7 +98,6 @@ async def odx_cycle_loop():
                 current_deals = [d for d in list(deal_cache) if now_ts - float(d.get("timestamp", 0)) <= 60]
                 
                 client_id = os.getenv("FYERS_CLIENT_ID")
-                # v9.7: Hardened Token Retrieval
                 access_token = fyers_stream.access_token if fyers_stream else os.getenv("FYERS_ACCESS_TOKEN")
                 
                 if client_id and access_token:
@@ -104,7 +107,6 @@ async def odx_cycle_loop():
                     if quotes_res.get("s") == "ok":
                         spot = float(quotes_res["d"][0]["v"].get("lp") or 0.0)
                         atm = round(spot / 50) * 50
-                        # v9.7: Checkpoint SPOT
                         print(f"ODX SPOT: {spot}", flush=True)
                         
                         oc_payload = {"symbol": "NSE:NIFTY50-INDEX", "strikecount": 5, "timestamp": ""}
@@ -112,7 +114,6 @@ async def odx_cycle_loop():
                         
                         if response.get("s") == "ok":
                             raw_chain = response.get("data", {}).get("optionsChain", [])
-                            # v9.7: Checkpoint CHAIN
                             print(f"ODX CHAIN RESPONSE: {response.get('s')} strikes={len(raw_chain)}", flush=True)
                             
                             current_time = get_ist_time()
@@ -204,7 +205,6 @@ async def odx_cycle_loop():
                                     "who": str(who if (ce_who!="----" or pe_who!="----") else "----"), "label": str(label)
                                 })
 
-                            # v9.7: Checkpoint LOOP DONE
                             print(f"ODX LOOP DONE: {len(strikes_data)} strikes built", flush=True)
 
                             ce_net = ce_buy_cr - ce_sell_cr
@@ -224,7 +224,6 @@ async def odx_cycle_loop():
                                     "pe_sell": round(float(pe_sell_cr), 1)
                                 }
                             }
-                            # v9.7: Checkpoint READY
                             print(f"ODX PAYLOAD READY: sending to TG", flush=True)
 
                             new_strikes = list(set(s for s in temp_nifty_strikes if s and isinstance(s, str)))
@@ -241,9 +240,10 @@ async def odx_cycle_loop():
                             deal_cache.extend(remaining)
 
             except Exception as e:
-                # v9.7: Aggressive Traceback
                 print(f"ODX CRASH: {type(e).__name__}: {e}", flush=True)
                 traceback.print_exc()
+
+        # v9.8: Perpetual Root Sleep
         await asyncio.sleep(60)
 
 async def rotation_cycle_loop():
