@@ -22,7 +22,7 @@ class TelegramNotifier:
             return None
 
     def send_odx_heartbeat(self, data: dict):
-        """v9.2 Refined Totals & Bias Heartbeat"""
+        """v9.3 Sentiment & Strategy Heartbeat"""
         try:
             time_str = data.get("time", "00:00")
             spot = data.get("spot", 0.0)
@@ -56,23 +56,20 @@ class TelegramNotifier:
                 row = f"{strike_str:<7} | {ce_fmt:<8} {c_agg:<5}| {pe_fmt:<8} {p_agg:<5}| {who:<5}| {signal}\n"
                 body += row
 
-            # v9.2: Correct Bias Calculation
             agg = data.get("aggregator", {})
             ce_buy, ce_sell = agg.get('ce_buy', 0), agg.get('ce_sell', 0)
             pe_buy, pe_sell = agg.get('pe_buy', 0), agg.get('pe_sell', 0)
+            bias = agg.get('aggregate_bias_l', 0.0)
             
-            ce_net = ce_buy - ce_sell
-            pe_net = pe_buy - pe_sell # positive = put buying = bearish
-            bias_l = ce_net - pe_net   # positive = bullish
-            
-            bias_sign = "+" if bias_l > 0 else "-" if bias_l < 0 else "="
+            # v9.3: Sentiment Tagging
+            sentiment = "🟢 BULLISH" if bias > 5 else "🔴 BEARISH" if bias < -5 else "🟡 NEUTRAL"
             
             footer = (
                 f"----------------------------------------------------------\n"
                 f"Institutional Flow (60s)\n"
-                f"BIAS: {bias_sign} {bias_l:+.1f} Lakhs\n"
                 f"CE: {ce_buy:.1f}L Buy | {ce_sell:.1f}L Sell\n"
-                f"PE: {pe_buy:.1f}L Buy | {pe_sell:.1f}L Sell"
+                f"PE: {pe_buy:.1f}L Buy | {pe_sell:.1f}L Sell\n"
+                f"BIAS: {bias:+.1f}L {sentiment}"
             )
             
             text = header + body + footer

@@ -129,8 +129,6 @@ async def odx_cycle_loop():
                         live_pcr = round(total_pe_oi / total_ce_oi, 2) if total_ce_oi > 0 else 0.91
 
                         temp_nifty_strikes = []
-                        ce_buy_l, ce_sell_l, pe_buy_l, pe_sell_l = 0.0, 0.0, 0.0, 0.0
-                        
                         deals_by_strike = {} 
                         for d in current_deals:
                             sym = d.get("symbol", "")
@@ -144,67 +142,71 @@ async def odx_cycle_loop():
                                 if d_strike not in deals_by_strike: deals_by_strike[d_strike] = {"CE": [], "PE": []}
                                 deals_by_strike[d_strike][d_type].append(d)
 
+                        # v9.3: Inline Aggregation Start
+                        ce_buy_l = ce_sell_l = pe_buy_l = pe_sell_l = 0.0
+
                         for strike in sorted(strike_map.keys()):
                             row = strike_map[strike]
-                            ce_row, pe_row = row["ce"], row["pe"]
+                            ce_row, pe_row = row.get("ce", {}), row.get("pe", {})
                             if not ce_row or not pe_row: continue
                             
-                            ce_sym, pe_sym = ce_row["symbol"], pe_row["symbol"]
+                            ce_sym, pe_sym = ce_row.get("symbol"), pe_row.get("symbol")
                             ce_oi, pe_oi = float(ce_row.get("oi") or 0.0), float(pe_row.get("oi") or 0.0)
                             
                             if abs(strike - atm) <= 250: temp_nifty_strikes.extend([ce_sym, pe_sym])
 
                             strike_deals = deals_by_strike.get(strike, {"CE": [], "PE": []})
-                            ce_deals = strike_deals["CE"]
-                            pe_deals = strike_deals["PE"]
+                            ce_deals, pe_deals = strike_deals["CE"], strike_deals["PE"]
                             
-                            def get_agg_and_flow(deals, sym_type):
-                                nonlocal ce_buy_l, ce_sell_l, pe_buy_l, pe_sell_l
-                                if not deals: return "----", "----", 0.0
+                            ce_agg = pe_agg = ce_who = pe_who = "----"
+                            ce_pulse_l = pe_pulse_l = 0.0
 
-                                # v9.2: Independent Buy/Sell Accumulation
-                                buy_deals  = [d for d in deals if d.get("direction") == "BUY"]
-                                sell_deals = [d for d in deals if d.get("direction") == "SELL"]
+                            # Process CE and PE for this strike
+                            for sym_type, sym_deals in [("CE", ce_deals), ("PE", pe_deals)]:
+                                if not sym_deals: continue
+
+                                buy_deals  = [d for d in sym_deals if d.get("direction") == "BUY"]
+                                sell_deals = [d for d in sym_deals if d.get("direction") == "SELL"]
 
                                 d_buy_l  = sum(float(d.get("qty", 0)) * float(d.get("ltp", 0)) for d in buy_deals)  / 100000
                                 d_sell_l = sum(float(d.get("qty", 0)) * float(d.get("ltp", 0)) for d in sell_deals) / 100000
-                                net_flow_l = d_buy_l - d_sell_l
-                                
-                                # Accumulate BOTH sides independently
-                                if sym_type == "CE":
-                                    ce_buy_l += d_buy_l
-                                    ce_sell_l += d_sell_l
-                                else:
-                                    pe_buy_l += d_buy_l
-                                    pe_sell_l += d_sell_l
-                                
+                                net_l = d_buy_l - d_sell_l
+
                                 buys = sum(float(d.get("qty", 0)) for d in buy_deals)
                                 sells = sum(float(d.get("qty", 0)) for d in sell_deals)
                                 agg = "BUY" if buys > sells else "SELL" if sells > buys else "----"
-                                
-                                participants = [d.get("participant") for d in deals 
-                                               if d.get("participant") and d.get("participant") not in ("----", None, "")]
-                                who = max(set(participants), key=participants.count) if participants else "----"
-                                
-                                return agg, who, net_flow_l
 
-                            ce_agg, ce_who, ce_pulse_l = get_agg_and_flow(ce_deals, "CE")
-                            pe_agg, pe_who, pe_pulse_l = get_agg_and_flow(pe_deals, "PE")
+                                parts = [d.get("participant") for d in sym_deals 
+                                        if d.get("participant") and d.get("participant") not in ("----", None, "")]
+                                who = max(set(parts), key=parts.count) if parts else "----"
+
+                                # Accumulate directly into global totals
+                                if sym_type == "CE":
+                                    ce_buy_l += d_buy_l
+                                    ce_sell_l += d_sell_l
+                                    ce_agg, ce_who, ce_pulse_l = agg, who, net_l
+                                else:
+                                    pe_buy_l += d_buy_l
+                                    pe_sell_l += d_sell_l
+                                    pe_agg, pe_who, pe_pulse_l = agg, who, net_l
+
+                            # v9.3: Advanced Strategy Logic
+                            if ce_pulse_l != 0 and pe_pulse_l != 0:
+                                if ce_pulse_l > 0 and pe_pulse_l < 0:   label = "Bull Spread⚡"
+                                elif ce_pulse_l < 0 and pe_pulse_l > 0: label = "Bear Spread⚡"
+                                elif ce_pulse_l > 0 and pe_pulse_l > 0: label = "Straddle Buy⚡"
+                                else:                                   label = "Straddle Write⚡"
+                            elif ce_pulse_l > 0:  label = "Call Buy⚡"
+                            elif ce_pulse_l < 0:  label = "Call Write⚡"
+                            elif pe_pulse_l > 0:  label = "Put Buy⚡"
+                            elif pe_pulse_l < 0:  label = "Put Write⚡"
+                            else:                  label = "Accumulate"
+
                             final_who = ce_who if ce_who != "----" else pe_who
 
-                            if abs(ce_pulse_l) > 0.1 and abs(pe_pulse_l) > 0.1:
-                                if ce_pulse_l > 0 and pe_pulse_l > 0: label = "Straddle Buy⚡"
-                                elif ce_pulse_l < 0 and pe_pulse_l < 0: label = "Straddle Write⚡"
-                                elif ce_pulse_l > 0 and pe_pulse_l < 0: label = "Bull Spread⚡"
-                                elif ce_pulse_l < 0 and pe_pulse_l > 0: label = "Bear Spread⚡"
-                                else: label = "Neutral Play"
-                            else:
-                                label = "Accumulate" if (ce_pulse_l + pe_pulse_l) > 0 else "Distribute"
-                            
                             strikes_data.append({
                                 "strike": int(strike), "is_atm": strike == atm,
                                 "ce_delta_l": float(ce_pulse_l), "pe_delta_l": float(pe_pulse_l),
-                                "ce_oi_l": float(ce_oi * 50 / 100000), "pe_oi_l": float(pe_oi * 50 / 100000),
                                 "ce_aggressor": str(ce_agg), "pe_aggressor": str(pe_agg),
                                 "who": str(final_who), "label": str(label)
                             })
@@ -240,10 +242,21 @@ async def odx_cycle_loop():
                             if pin_alerts: alert_text += "\n".join(pin_alerts)
                             fyers_stream.notifier.send_message(alert_text)
 
+                        # v9.3: Payload Construction
+                        ce_net = ce_buy_l - ce_sell_l
+                        pe_net = pe_buy_l - pe_sell_l
+                        bias_l = ce_net - pe_net
+
                         odx_payload = {
                             "time": str(current_time), "spot": float(spot), "atm": int(atm), "pcr": live_pcr,
                             "strikes": strikes_data,
-                            "aggregator": {"ce_buy": float(ce_buy_l), "ce_sell": float(ce_sell_l), "pe_buy": float(pe_buy_l), "pe_sell": float(pe_sell_l)}
+                            "aggregator": {
+                                "aggregate_bias_l": float(bias_l),
+                                "ce_buy":  round(float(ce_buy_l),  1),
+                                "ce_sell": round(float(ce_sell_l), 1),
+                                "pe_buy":  round(float(pe_buy_l),  1),
+                                "pe_sell": round(float(pe_sell_l), 1)
+                            }
                         }
                         fyers_stream.notifier.send_odx_heartbeat(odx_payload)
 
