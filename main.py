@@ -77,12 +77,12 @@ async def check_instant_alerts(notifier, strikes_data: list, spot: float, atm: i
 async def odx_cycle_loop():
     global fyers_stream, deal_cache, nifty_strikes_to_sub
     
-    # v9.8: Startup Warmup
-    print("ODX: Waiting 30s for WS to connect before first cycle...", flush=True)
+    # v9.9: Clear Startup Warmup
+    print("ODX: Waiting 30s for WS warmup...", flush=True)
     await asyncio.sleep(30)
 
     while True:
-        # v9.8: Root-level Heartbeat
+        # v9.9: Clear Root Heartbeat
         print(f"ODX LOOP TICK: {get_ist_time()}", flush=True)
         
         try:
@@ -239,11 +239,12 @@ async def odx_cycle_loop():
                             deal_cache.clear()
                             deal_cache.extend(remaining)
 
-            except Exception as e:
-                print(f"ODX CRASH: {type(e).__name__}: {e}", flush=True)
-                traceback.print_exc()
+        except Exception as e:
+            import traceback
+            print(f"ODX CRASH: {type(e).__name__}: {e}", flush=True)
+            traceback.print_exc()
 
-        # v9.8: Perpetual Root Sleep
+        # v9.9: Clear Root Sleep
         await asyncio.sleep(60)
 
 async def rotation_cycle_loop():
