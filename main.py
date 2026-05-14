@@ -44,7 +44,7 @@ async def broadcast_deal(deal: dict):
     for c in disconnected: connected_clients.remove(c)
 
 async def check_instant_alerts(notifier, strikes_data: list, spot: float, atm: int):
-    """v9.0 Feature 4: Fires immediate Telegram alert if any strike hits >50L in current window"""
+    """Fires immediate Telegram alert if any strike hits >50L in current window"""
     THRESHOLD_L = 50.0
     
     for strike in strikes_data:
@@ -160,16 +160,17 @@ async def odx_cycle_loop():
                             
                             def get_agg_and_flow(deals, sym_type):
                                 nonlocal ce_buy_l, ce_sell_l, pe_buy_l, pe_sell_l
-                                sig_deals = [d for d in deals if d.get("symbol", "")]
-                                if not sig_deals: return "----", "----", 0.0
-                                
-                                sell_deals = [d for d in sig_deals if d.get("direction") == "SELL"]
-                                buy_deals  = [d for d in sig_deals if d.get("direction") == "BUY"]
-                                
+                                if not deals: return "----", "----", 0.0
+
+                                # v9.2: Independent Buy/Sell Accumulation
+                                buy_deals  = [d for d in deals if d.get("direction") == "BUY"]
+                                sell_deals = [d for d in deals if d.get("direction") == "SELL"]
+
                                 d_buy_l  = sum(float(d.get("qty", 0)) * float(d.get("ltp", 0)) for d in buy_deals)  / 100000
                                 d_sell_l = sum(float(d.get("qty", 0)) * float(d.get("ltp", 0)) for d in sell_deals) / 100000
                                 net_flow_l = d_buy_l - d_sell_l
                                 
+                                # Accumulate BOTH sides independently
                                 if sym_type == "CE":
                                     ce_buy_l += d_buy_l
                                     ce_sell_l += d_sell_l
@@ -177,12 +178,12 @@ async def odx_cycle_loop():
                                     pe_buy_l += d_buy_l
                                     pe_sell_l += d_sell_l
                                 
-                                buys = sum(float(d.get("qty") or 0.0) for d in buy_deals)
-                                sells = sum(float(d.get("qty") or 0.0) for d in sell_deals)
+                                buys = sum(float(d.get("qty", 0)) for d in buy_deals)
+                                sells = sum(float(d.get("qty", 0)) for d in sell_deals)
                                 agg = "BUY" if buys > sells else "SELL" if sells > buys else "----"
                                 
-                                participants = [d.get("participant") for d in sig_deals 
-                                               if d.get("participant") and d.get("participant") not in ("----", "")]
+                                participants = [d.get("participant") for d in deals 
+                                               if d.get("participant") and d.get("participant") not in ("----", None, "")]
                                 who = max(set(participants), key=participants.count) if participants else "----"
                                 
                                 return agg, who, net_flow_l
@@ -214,18 +215,13 @@ async def odx_cycle_loop():
                             if fyers_stream: 
                                 fyers_stream.subscribe_symbols(nifty_strikes_to_sub)
 
-                        bias_l = (ce_buy_l + pe_sell_l) - (ce_sell_l + pe_buy_l)
-                        
-                        # Step 4: Instant Alerts
                         await check_instant_alerts(fyers_stream.notifier, strikes_data, spot, atm)
                         
-                        # Step 5: Wire OI spike and pin detection
                         spike_alerts = []
                         pin_alerts   = []
 
                         for sym, oi_deque in fyers_stream.engine.oi_history.items():
                             if not oi_deque: continue
-                            
                             spike = fyers_stream.engine.detect_oi_spike(sym)
                             if spike.get("spike"):
                                 spike_alerts.append(f"🔥 OI SPIKE: {sym} +{spike['pct_change']}% ({spike['abs_change']:,} contracts)")
@@ -243,14 +239,12 @@ async def odx_cycle_loop():
                             if spike_alerts: alert_text += "\n".join(spike_alerts) + "\n\n"
                             if pin_alerts: alert_text += "\n".join(pin_alerts)
                             fyers_stream.notifier.send_message(alert_text)
-                            print(f"⚡ SMART ALERTS SENT: {len(spike_alerts)} spikes, {len(pin_alerts)} pins", flush=True)
 
                         odx_payload = {
                             "time": str(current_time), "spot": float(spot), "atm": int(atm), "pcr": live_pcr,
                             "strikes": strikes_data,
-                            "aggregator": {"aggregate_bias_l": float(bias_l), "ce_buy": round(float(ce_buy_l), 2), "ce_sell": round(float(ce_sell_l), 2), "pe_buy": round(float(pe_buy_l), 2), "pe_sell": round(float(pe_sell_l), 2)}
+                            "aggregator": {"ce_buy": float(ce_buy_l), "ce_sell": float(ce_sell_l), "pe_buy": float(pe_buy_l), "pe_sell": float(pe_sell_l)}
                         }
-                        
                         fyers_stream.notifier.send_odx_heartbeat(odx_payload)
 
             except Exception as e: print(f"ODX Error: {e}")

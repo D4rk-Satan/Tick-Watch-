@@ -22,7 +22,7 @@ class TelegramNotifier:
             return None
 
     def send_odx_heartbeat(self, data: dict):
-        """v8.5 Precise Table Heartbeat"""
+        """v9.2 Refined Totals & Bias Heartbeat"""
         try:
             time_str = data.get("time", "00:00")
             spot = data.get("spot", 0.0)
@@ -30,7 +30,6 @@ class TelegramNotifier:
             pcr = data.get("pcr", 0.91)
             strikes = data.get("strikes", [])
             
-            # FIX 3: Precise Header Alignment
             header = (
                 f"ODX Pulse • {time_str}\n"
                 f"SPOT: {spot:.1f} | ATM: {atm} | PCR: {pcr:.2f}\n\n"
@@ -54,20 +53,26 @@ class TelegramNotifier:
                 who = s.get('who', '----')
                 signal = s.get('label', '----')
                 
-                # FIX 3: Precise Row Alignment
                 row = f"{strike_str:<7} | {ce_fmt:<8} {c_agg:<5}| {pe_fmt:<8} {p_agg:<5}| {who:<5}| {signal}\n"
                 body += row
 
+            # v9.2: Correct Bias Calculation
             agg = data.get("aggregator", {})
-            bias_l = agg.get("aggregate_bias_l", 0.0)
+            ce_buy, ce_sell = agg.get('ce_buy', 0), agg.get('ce_sell', 0)
+            pe_buy, pe_sell = agg.get('pe_buy', 0), agg.get('pe_sell', 0)
+            
+            ce_net = ce_buy - ce_sell
+            pe_net = pe_buy - pe_sell # positive = put buying = bearish
+            bias_l = ce_net - pe_net   # positive = bullish
+            
             bias_sign = "+" if bias_l > 0 else "-" if bias_l < 0 else "="
             
             footer = (
                 f"----------------------------------------------------------\n"
                 f"Institutional Flow (60s)\n"
                 f"BIAS: {bias_sign} {bias_l:+.1f} Lakhs\n"
-                f"CE: {agg.get('ce_buy',0):.1f}L vs {agg.get('ce_sell',0):.1f}L\n"
-                f"PE: {agg.get('pe_buy',0):.1f}L vs {agg.get('pe_sell',0):.1f}L"
+                f"CE: {ce_buy:.1f}L Buy | {ce_sell:.1f}L Sell\n"
+                f"PE: {pe_buy:.1f}L Buy | {pe_sell:.1f}L Sell"
             )
             
             text = header + body + footer
