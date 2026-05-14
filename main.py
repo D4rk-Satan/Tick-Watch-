@@ -142,8 +142,7 @@ async def odx_cycle_loop():
                                 if d_strike not in deals_by_strike: deals_by_strike[d_strike] = {"CE": [], "PE": []}
                                 deals_by_strike[d_strike][d_type].append(d)
 
-                        # v9.3: Inline Aggregation Start
-                        ce_buy_l = ce_sell_l = pe_buy_l = pe_sell_l = 0.0
+                        ce_buy_cr = ce_sell_cr = pe_buy_cr = pe_sell_cr = 0.0
 
                         for strike in sorted(strike_map.keys()):
                             row = strike_map[strike]
@@ -161,7 +160,6 @@ async def odx_cycle_loop():
                             ce_agg = pe_agg = ce_who = pe_who = "----"
                             ce_pulse_l = pe_pulse_l = 0.0
 
-                            # Process CE and PE for this strike
                             for sym_type, sym_deals in [("CE", ce_deals), ("PE", pe_deals)]:
                                 if not sym_deals: continue
 
@@ -180,17 +178,15 @@ async def odx_cycle_loop():
                                         if d.get("participant") and d.get("participant") not in ("----", None, "")]
                                 who = max(set(parts), key=parts.count) if parts else "----"
 
-                                # Accumulate directly into global totals
                                 if sym_type == "CE":
-                                    ce_buy_l += d_buy_l
-                                    ce_sell_l += d_sell_l
+                                    ce_buy_cr += d_buy_l
+                                    ce_sell_cr += d_sell_l
                                     ce_agg, ce_who, ce_pulse_l = agg, who, net_l
                                 else:
-                                    pe_buy_l += d_buy_l
-                                    pe_sell_l += d_sell_l
+                                    pe_buy_cr += d_buy_l
+                                    pe_sell_cr += d_sell_l
                                     pe_agg, pe_who, pe_pulse_l = agg, who, net_l
 
-                            # v9.3: Advanced Strategy Logic
                             if ce_pulse_l != 0 and pe_pulse_l != 0:
                                 if ce_pulse_l > 0 and pe_pulse_l < 0:   label = "Bull Spread⚡"
                                 elif ce_pulse_l < 0 and pe_pulse_l > 0: label = "Bear Spread⚡"
@@ -242,20 +238,20 @@ async def odx_cycle_loop():
                             if pin_alerts: alert_text += "\n".join(pin_alerts)
                             fyers_stream.notifier.send_message(alert_text)
 
-                        # v9.3: Payload Construction
-                        ce_net = ce_buy_l - ce_sell_l
-                        pe_net = pe_buy_l - pe_sell_l
-                        bias_l = ce_net - pe_net
+                        # v9.4: Standardized Aggregator Keys
+                        ce_net = ce_buy_cr - ce_sell_cr
+                        pe_net = pe_buy_cr - pe_sell_cr
+                        bias_cr = ce_net - pe_net
 
                         odx_payload = {
                             "time": str(current_time), "spot": float(spot), "atm": int(atm), "pcr": live_pcr,
                             "strikes": strikes_data,
                             "aggregator": {
-                                "aggregate_bias_l": float(bias_l),
-                                "ce_buy":  round(float(ce_buy_l),  1),
-                                "ce_sell": round(float(ce_sell_l), 1),
-                                "pe_buy":  round(float(pe_buy_l),  1),
-                                "pe_sell": round(float(pe_sell_l), 1)
+                                "aggregate_bias_cr": float(bias_cr),
+                                "ce_buy":  round(float(ce_buy_cr),  1),
+                                "ce_sell": round(float(ce_sell_cr), 1),
+                                "pe_buy":  round(float(pe_buy_cr),  1),
+                                "pe_sell": round(float(pe_sell_cr), 1)
                             }
                         }
                         fyers_stream.notifier.send_odx_heartbeat(odx_payload)

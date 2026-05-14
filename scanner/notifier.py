@@ -22,7 +22,7 @@ class TelegramNotifier:
             return None
 
     def send_odx_heartbeat(self, data: dict):
-        """v9.3 Sentiment & Strategy Heartbeat"""
+        """v9.4 Standardized Key & Sentiment Heartbeat"""
         try:
             time_str = data.get("time", "00:00")
             spot = data.get("spot", 0.0)
@@ -56,20 +56,24 @@ class TelegramNotifier:
                 row = f"{strike_str:<7} | {ce_fmt:<8} {c_agg:<5}| {pe_fmt:<8} {p_agg:<5}| {who:<5}| {signal}\n"
                 body += row
 
+            # v9.4: Synchronized Aggregator Read
             agg = data.get("aggregator", {})
-            ce_buy, ce_sell = agg.get('ce_buy', 0), agg.get('ce_sell', 0)
-            pe_buy, pe_sell = agg.get('pe_buy', 0), agg.get('pe_sell', 0)
-            bias = agg.get('aggregate_bias_l', 0.0)
-            
-            # v9.3: Sentiment Tagging
-            sentiment = "🟢 BULLISH" if bias > 5 else "🔴 BEARISH" if bias < -5 else "🟡 NEUTRAL"
-            
+            ce_buy     = float(agg.get("ce_buy",  0))
+            ce_sell    = float(agg.get("ce_sell", 0))
+            pe_buy     = float(agg.get("pe_buy",  0))
+            pe_sell    = float(agg.get("pe_sell", 0))
+            bias       = float(agg.get("aggregate_bias_cr", 0))
+
+            if bias >= 10:    emoji, trend = "🟢", "BULLISH"
+            elif bias <= -10: emoji, trend = "🔴", "BEARISH"
+            else:             emoji, trend = "🟡", "NEUTRAL"
+
             footer = (
                 f"----------------------------------------------------------\n"
                 f"Institutional Flow (60s)\n"
+                f"BIAS: {bias:+.1f}L {emoji} {trend}\n"
                 f"CE: {ce_buy:.1f}L Buy | {ce_sell:.1f}L Sell\n"
-                f"PE: {pe_buy:.1f}L Buy | {pe_sell:.1f}L Sell\n"
-                f"BIAS: {bias:+.1f}L {sentiment}"
+                f"PE: {pe_buy:.1f}L Buy | {pe_sell:.1f}L Sell"
             )
             
             text = header + body + footer
