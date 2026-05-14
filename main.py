@@ -3,6 +3,7 @@ import os
 import threading
 import time
 import re
+import traceback
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -77,9 +78,11 @@ async def odx_cycle_loop():
     global fyers_stream, deal_cache, nifty_strikes_to_sub
     
     while True:
+        # v9.7: Heartbeat Print
+        print(f"ODX LOOP TICK: {get_ist_time()}", flush=True)
+
         if fyers_stream and fyers_stream.engine:
             try:
-                # v9.6: Initialize ALL at the very top of each cycle
                 ce_buy_cr = ce_sell_cr = pe_buy_cr = pe_sell_cr = 0.0
                 bias_cr = 0.0
                 strikes_data = []
@@ -91,7 +94,8 @@ async def odx_cycle_loop():
                 current_deals = [d for d in list(deal_cache) if now_ts - float(d.get("timestamp", 0)) <= 60]
                 
                 client_id = os.getenv("FYERS_CLIENT_ID")
-                access_token = os.getenv("FYERS_ACCESS_TOKEN") or (fyers_stream.access_token if fyers_stream else None)
+                # v9.7: Hardened Token Retrieval
+                access_token = fyers_stream.access_token if fyers_stream else os.getenv("FYERS_ACCESS_TOKEN")
                 
                 if client_id and access_token:
                     client = get_fyers_data_client(client_id, access_token)
@@ -100,14 +104,18 @@ async def odx_cycle_loop():
                     if quotes_res.get("s") == "ok":
                         spot = float(quotes_res["d"][0]["v"].get("lp") or 0.0)
                         atm = round(spot / 50) * 50
+                        # v9.7: Checkpoint SPOT
+                        print(f"ODX SPOT: {spot}", flush=True)
                         
                         oc_payload = {"symbol": "NSE:NIFTY50-INDEX", "strikecount": 5, "timestamp": ""}
                         response = client.optionchain(data=oc_payload)
                         
                         if response.get("s") == "ok":
                             raw_chain = response.get("data", {}).get("optionsChain", [])
-                            current_time = get_ist_time()
+                            # v9.7: Checkpoint CHAIN
+                            print(f"ODX CHAIN RESPONSE: {response.get('s')} strikes={len(raw_chain)}", flush=True)
                             
+                            current_time = get_ist_time()
                             strike_map = {}
                             symbol_lookup = {}
                             total_pe_oi, total_ce_oi = 0, 0
@@ -141,7 +149,6 @@ async def odx_cycle_loop():
                                     if d_strike not in deals_by_strike: deals_by_strike[d_strike] = {"CE": [], "PE": []}
                                     deals_by_strike[d_strike][d_type].append(d)
 
-                            # v9.6: Reset for this successful OC response
                             ce_buy_cr = ce_sell_cr = pe_buy_cr = pe_sell_cr = 0.0
 
                             for strike in sorted(strike_map.keys()):
@@ -194,8 +201,11 @@ async def odx_cycle_loop():
                                     "strike": int(strike), "is_atm": strike == atm,
                                     "ce_delta_l": float(ce_pulse_cr), "pe_delta_l": float(pe_pulse_cr),
                                     "ce_aggressor": str(ce_agg), "pe_aggressor": str(pe_agg),
-                                    "who": str(final_who if (ce_who!="----" or pe_who!="----") else "----"), "label": str(label)
+                                    "who": str(who if (ce_who!="----" or pe_who!="----") else "----"), "label": str(label)
                                 })
+
+                            # v9.7: Checkpoint LOOP DONE
+                            print(f"ODX LOOP DONE: {len(strikes_data)} strikes built", flush=True)
 
                             ce_net = ce_buy_cr - ce_sell_cr
                             pe_net = pe_buy_cr - pe_sell_cr
@@ -214,6 +224,8 @@ async def odx_cycle_loop():
                                     "pe_sell": round(float(pe_sell_cr), 1)
                                 }
                             }
+                            # v9.7: Checkpoint READY
+                            print(f"ODX PAYLOAD READY: sending to TG", flush=True)
 
                             new_strikes = list(set(s for s in temp_nifty_strikes if s and isinstance(s, str)))
                             if set(new_strikes) != set(nifty_strikes_to_sub):
@@ -223,13 +235,15 @@ async def odx_cycle_loop():
                             await check_instant_alerts(fyers_stream.notifier, strikes_data, spot, atm)
                             fyers_stream.notifier.send_odx_heartbeat(odx_payload)
 
-                            # v9.6: Cleanup INSIDE the successful block
                             cutoff = time.time() - 60
                             remaining = [d for d in list(deal_cache) if float(d.get("timestamp", 0)) >= cutoff]
                             deal_cache.clear()
                             deal_cache.extend(remaining)
 
-            except Exception as e: print(f"ODX Error: {e}")
+            except Exception as e:
+                # v9.7: Aggressive Traceback
+                print(f"ODX CRASH: {type(e).__name__}: {e}", flush=True)
+                traceback.print_exc()
         await asyncio.sleep(60)
 
 async def rotation_cycle_loop():
