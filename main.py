@@ -79,156 +79,155 @@ async def odx_cycle_loop():
     while True:
         if fyers_stream and fyers_stream.engine:
             try:
+                # v9.6: Initialize ALL at the very top of each cycle
+                ce_buy_cr = ce_sell_cr = pe_buy_cr = pe_sell_cr = 0.0
+                bias_cr = 0.0
+                strikes_data = []
+                live_pcr = 0.91
+                spot = 0.0
+                atm = 0
+                
                 now_ts = time.time()
                 current_deals = [d for d in list(deal_cache) if now_ts - float(d.get("timestamp", 0)) <= 60]
                 
                 client_id = os.getenv("FYERS_CLIENT_ID")
                 access_token = os.getenv("FYERS_ACCESS_TOKEN") or (fyers_stream.access_token if fyers_stream else None)
                 
-                if not client_id or not access_token:
-                    await asyncio.sleep(5)
-                    continue
-
-                client = get_fyers_data_client(client_id, access_token)
-                
-                quotes_res = client.quotes({"symbols": "NSE:NIFTY50-INDEX"})
-                if quotes_res.get("s") == "ok":
-                    spot = float(quotes_res["d"][0]["v"].get("lp") or 0.0)
-                    atm = round(spot / 50) * 50
+                if client_id and access_token:
+                    client = get_fyers_data_client(client_id, access_token)
+                    quotes_res = client.quotes({"symbols": "NSE:NIFTY50-INDEX"})
                     
-                    oc_payload = {"symbol": "NSE:NIFTY50-INDEX", "strikecount": 5, "timestamp": ""}
-                    response = client.optionchain(data=oc_payload)
-                    
-                    if response.get("s") == "ok":
-                        raw_chain = response.get("data", {}).get("optionsChain", [])
-                        current_time = get_ist_time()
+                    if quotes_res.get("s") == "ok":
+                        spot = float(quotes_res["d"][0]["v"].get("lp") or 0.0)
+                        atm = round(spot / 50) * 50
                         
-                        strike_map = {}
-                        symbol_lookup = {}
+                        oc_payload = {"symbol": "NSE:NIFTY50-INDEX", "strikecount": 5, "timestamp": ""}
+                        response = client.optionchain(data=oc_payload)
                         
-                        total_pe_oi, total_ce_oi = 0, 0
-                        for item in raw_chain:
-                            strike = int(item.get("strike_price") or 0)
-                            if strike <= 0: continue
-                            opt_type = item.get("option_type")
-                            sym = item.get("symbol")
-                            oi = int(item.get("oi") or 0)
+                        if response.get("s") == "ok":
+                            raw_chain = response.get("data", {}).get("optionsChain", [])
+                            current_time = get_ist_time()
                             
-                            if strike not in strike_map: strike_map[strike] = {"ce": {}, "pe": {}}
+                            strike_map = {}
+                            symbol_lookup = {}
+                            total_pe_oi, total_ce_oi = 0, 0
                             
-                            if opt_type == "CE":
-                                strike_map[strike]["ce"] = {"symbol": sym, "oi": oi}
-                                symbol_lookup[sym] = (strike, "CE")
-                                total_ce_oi += oi
-                            elif opt_type == "PE":
-                                strike_map[strike]["pe"] = {"symbol": sym, "oi": oi}
-                                symbol_lookup[sym] = (strike, "PE")
-                                total_pe_oi += oi
+                            for item in raw_chain:
+                                strike = int(item.get("strike_price") or 0)
+                                if strike <= 0: continue
+                                opt_type = item.get("option_type")
+                                sym = item.get("symbol")
+                                oi = int(item.get("oi") or 0)
+                                
+                                if strike not in strike_map: strike_map[strike] = {"ce": {}, "pe": {}}
+                                if opt_type == "CE":
+                                    strike_map[strike]["ce"] = {"symbol": sym, "oi": oi}
+                                    symbol_lookup[sym] = (strike, "CE")
+                                    total_ce_oi += oi
+                                elif opt_type == "PE":
+                                    strike_map[strike]["pe"] = {"symbol": sym, "oi": oi}
+                                    symbol_lookup[sym] = (strike, "PE")
+                                    total_pe_oi += oi
 
-                        live_pcr = round(total_pe_oi / total_ce_oi, 2) if total_ce_oi > 0 else 0.91
+                            live_pcr = round(total_pe_oi / total_ce_oi, 2) if total_ce_oi > 0 else 0.91
 
-                        temp_nifty_strikes = []
-                        deals_by_strike = {} 
-                        for d in current_deals:
-                            sym = d.get("symbol", "")
-                            if not sym: continue
-                            if sym in symbol_lookup:
-                                d_strike, d_type = symbol_lookup[sym]
-                            else:
-                                d_strike, d_type = extract_strike_type(sym)
-                            
-                            if d_strike is not None:
-                                if d_strike not in deals_by_strike: deals_by_strike[d_strike] = {"CE": [], "PE": []}
-                                deals_by_strike[d_strike][d_type].append(d)
+                            temp_nifty_strikes = []
+                            deals_by_strike = {} 
+                            for d in current_deals:
+                                sym = d.get("symbol", "")
+                                if not sym: continue
+                                d_strike, d_type = symbol_lookup[sym] if sym in symbol_lookup else extract_strike_type(sym)
+                                if d_strike is not None:
+                                    if d_strike not in deals_by_strike: deals_by_strike[d_strike] = {"CE": [], "PE": []}
+                                    deals_by_strike[d_strike][d_type].append(d)
 
-                        # v9.5: STRICT Initialization before loop
-                        ce_buy_cr = ce_sell_cr = pe_buy_cr = pe_sell_cr = 0.0
-                        strikes_data = []
+                            # v9.6: Reset for this successful OC response
+                            ce_buy_cr = ce_sell_cr = pe_buy_cr = pe_sell_cr = 0.0
 
-                        for strike in sorted(strike_map.keys()):
-                            row = strike_map[strike]
-                            ce_row, pe_row = row.get("ce", {}), row.get("pe", {})
-                            if not ce_row or not pe_row: continue
-                            
-                            ce_sym, pe_sym = ce_row.get("symbol"), pe_row.get("symbol")
-                            if abs(strike - atm) <= 250: temp_nifty_strikes.extend([ce_sym, pe_sym])
+                            for strike in sorted(strike_map.keys()):
+                                row = strike_map[strike]
+                                ce_row, pe_row = row.get("ce", {}), row.get("pe", {})
+                                if not ce_row or not pe_row: continue
+                                
+                                ce_sym, pe_sym = ce_row.get("symbol"), pe_row.get("symbol")
+                                if abs(strike - atm) <= 250: temp_nifty_strikes.extend([ce_sym, pe_sym])
 
-                            strike_deals = deals_by_strike.get(strike, {"CE": [], "PE": []})
-                            ce_agg = pe_agg = ce_who = pe_who = "----"
-                            ce_pulse_cr = pe_pulse_cr = 0.0
+                                strike_deals = deals_by_strike.get(strike, {"CE": [], "PE": []})
+                                ce_agg = pe_agg = ce_who = pe_who = "----"
+                                ce_pulse_cr = pe_pulse_cr = 0.0
 
-                            for sym_type, sym_deals in [("CE", strike_deals["CE"]), ("PE", strike_deals["PE"])]:
-                                if not sym_deals: continue
+                                for sym_type, sym_deals in [("CE", strike_deals["CE"]), ("PE", strike_deals["PE"])]:
+                                    if not sym_deals: continue
 
-                                buy_deals  = [d for d in sym_deals if d.get("direction") == "BUY"]
-                                sell_deals = [d for d in sym_deals if d.get("direction") == "SELL"]
+                                    buy_deals  = [d for d in sym_deals if d.get("direction") == "BUY"]
+                                    sell_deals = [d for d in sym_deals if d.get("direction") == "SELL"]
 
-                                d_buy_l  = sum(float(d.get("qty", 0)) * float(d.get("ltp", 0)) for d in buy_deals)  / 100000
-                                d_sell_l = sum(float(d.get("qty", 0)) * float(d.get("ltp", 0)) for d in sell_deals) / 100000
-                                net_cr = d_buy_l - d_sell_l
+                                    d_buy_l  = sum(float(d.get("qty", 0)) * float(d.get("ltp", 0)) for d in buy_deals)  / 100000
+                                    d_sell_l = sum(float(d.get("qty", 0)) * float(d.get("ltp", 0)) for d in sell_deals) / 100000
+                                    net_cr = d_buy_l - d_sell_l
 
-                                buys = sum(float(d.get("qty", 0)) for d in buy_deals)
-                                sells = sum(float(d.get("qty", 0)) for d in sell_deals)
-                                agg = "BUY" if buys > sells else "SELL" if sells > buys else "----"
+                                    buys = sum(float(d.get("qty", 0)) for d in buy_deals)
+                                    sells = sum(float(d.get("qty", 0)) for d in sell_deals)
+                                    agg = "BUY" if buys > sells else "SELL" if sells > buys else "----"
 
-                                parts = [d.get("participant") for d in sym_deals 
-                                        if d.get("participant") and d.get("participant") not in ("----", None, "")]
-                                who = max(set(parts), key=parts.count) if parts else "----"
+                                    parts = [d.get("participant") for d in sym_deals 
+                                            if d.get("participant") and d.get("participant") not in ("----", None, "")]
+                                    who = max(set(parts), key=parts.count) if parts else "----"
 
-                                if sym_type == "CE":
-                                    ce_buy_cr += d_buy_l
-                                    ce_sell_cr += d_sell_l
-                                    ce_agg, ce_who, ce_pulse_cr = agg, who, net_cr
-                                else:
-                                    pe_buy_cr += d_buy_l
-                                    pe_sell_cr += d_sell_l
-                                    pe_agg, pe_who, pe_pulse_cr = agg, who, net_cr
+                                    if sym_type == "CE":
+                                        ce_buy_cr += d_buy_l; ce_sell_cr += d_sell_l; ce_agg, ce_who, ce_pulse_cr = agg, who, net_cr
+                                    else:
+                                        pe_buy_cr += d_buy_l; pe_sell_cr += d_sell_l; pe_agg, pe_who, pe_pulse_cr = agg, who, net_cr
 
-                            if ce_pulse_cr != 0 and pe_pulse_cr != 0:
-                                if ce_pulse_cr > 0 and pe_pulse_cr < 0:   label = "Bull Spread⚡"
-                                elif ce_pulse_cr < 0 and pe_pulse_cr > 0: label = "Bear Spread⚡"
-                                elif ce_pulse_cr > 0 and pe_pulse_cr > 0: label = "Straddle Buy⚡"
-                                else:                                   label = "Straddle Write⚡"
-                            elif ce_pulse_cr > 0:  label = "Call Buy⚡"
-                            elif ce_pulse_cr < 0:  label = "Call Write⚡"
-                            elif pe_pulse_cr > 0:  label = "Put Buy⚡"
-                            elif pe_pulse_cr < 0:  label = "Put Write⚡"
-                            else:                  label = "Accumulate"
+                                if ce_pulse_cr != 0 and pe_pulse_cr != 0:
+                                    if ce_pulse_cr > 0 and pe_pulse_cr < 0:   label = "Bull Spread⚡"
+                                    elif ce_pulse_cr < 0 and pe_pulse_cr > 0: label = "Bear Spread⚡"
+                                    elif ce_pulse_cr > 0 and pe_pulse_cr > 0: label = "Straddle Buy⚡"
+                                    else:                                   label = "Straddle Write⚡"
+                                elif ce_pulse_cr > 0:  label = "Call Buy⚡"
+                                elif ce_pulse_cr < 0:  label = "Call Write⚡"
+                                elif pe_pulse_cr > 0:  label = "Put Buy⚡"
+                                elif pe_pulse_cr < 0:  label = "Put Write⚡"
+                                else:                  label = "Accumulate"
 
-                            final_who = ce_who if ce_who != "----" else pe_who
-                            strikes_data.append({
-                                "strike": int(strike), "is_atm": strike == atm,
-                                "ce_delta_l": float(ce_pulse_cr), "pe_delta_l": float(pe_pulse_cr),
-                                "ce_aggressor": str(ce_agg), "pe_aggressor": str(pe_agg),
-                                "who": str(final_who), "label": str(label)
-                            })
+                                strikes_data.append({
+                                    "strike": int(strike), "is_atm": strike == atm,
+                                    "ce_delta_l": float(ce_pulse_cr), "pe_delta_l": float(pe_pulse_cr),
+                                    "ce_aggressor": str(ce_agg), "pe_aggressor": str(pe_agg),
+                                    "who": str(final_who if (ce_who!="----" or pe_who!="----") else "----"), "label": str(label)
+                                })
 
-                        # v9.5: Calculate bias AFTER loop completes
-                        ce_net = ce_buy_cr - ce_sell_cr
-                        pe_net = pe_buy_cr - pe_sell_cr
-                        bias_cr = ce_net - pe_net
+                            ce_net = ce_buy_cr - ce_sell_cr
+                            pe_net = pe_buy_cr - pe_sell_cr
+                            bias_cr = ce_net - pe_net
 
-                        print(f"AGGREGATOR DEBUG: ce_buy={ce_buy_cr:.1f} ce_sell={ce_sell_cr:.1f} pe_buy={pe_buy_cr:.1f} pe_sell={pe_sell_cr:.1f} bias={bias_cr:.1f}", flush=True)
+                            print(f"AGGREGATOR DEBUG: ce_buy={ce_buy_cr:.1f} ce_sell={ce_sell_cr:.1f} pe_buy={pe_buy_cr:.1f} pe_sell={pe_sell_cr:.1f} bias={bias_cr:.1f}", flush=True)
 
-                        odx_payload = {
-                            "time": str(current_time), "spot": float(spot), "atm": int(atm), "pcr": live_pcr,
-                            "strikes": strikes_data,
-                            "aggregator": {
-                                "aggregate_bias_cr": float(bias_cr),
-                                "ce_buy":  round(float(ce_buy_cr),  1),
-                                "ce_sell": round(float(ce_sell_cr), 1),
-                                "pe_buy":  round(float(pe_buy_cr),  1),
-                                "pe_sell": round(float(pe_sell_cr), 1)
+                            odx_payload = {
+                                "time": str(current_time), "spot": float(spot), "atm": int(atm), "pcr": live_pcr,
+                                "strikes": strikes_data,
+                                "aggregator": {
+                                    "aggregate_bias_cr": float(bias_cr),
+                                    "ce_buy":  round(float(ce_buy_cr),  1),
+                                    "ce_sell": round(float(ce_sell_cr), 1),
+                                    "pe_buy":  round(float(pe_buy_cr),  1),
+                                    "pe_sell": round(float(pe_sell_cr), 1)
+                                }
                             }
-                        }
 
-                        new_strikes = list(set(s for s in temp_nifty_strikes if s and isinstance(s, str)))
-                        if set(new_strikes) != set(nifty_strikes_to_sub):
-                            nifty_strikes_to_sub = new_strikes
-                            if fyers_stream: fyers_stream.subscribe_symbols(nifty_strikes_to_sub)
+                            new_strikes = list(set(s for s in temp_nifty_strikes if s and isinstance(s, str)))
+                            if set(new_strikes) != set(nifty_strikes_to_sub):
+                                nifty_strikes_to_sub = new_strikes
+                                if fyers_stream: fyers_stream.subscribe_symbols(nifty_strikes_to_sub)
 
-                        await check_instant_alerts(fyers_stream.notifier, strikes_data, spot, atm)
-                        fyers_stream.notifier.send_odx_heartbeat(odx_payload)
+                            await check_instant_alerts(fyers_stream.notifier, strikes_data, spot, atm)
+                            fyers_stream.notifier.send_odx_heartbeat(odx_payload)
+
+                            # v9.6: Cleanup INSIDE the successful block
+                            cutoff = time.time() - 60
+                            remaining = [d for d in list(deal_cache) if float(d.get("timestamp", 0)) >= cutoff]
+                            deal_cache.clear()
+                            deal_cache.extend(remaining)
 
             except Exception as e: print(f"ODX Error: {e}")
         await asyncio.sleep(60)
