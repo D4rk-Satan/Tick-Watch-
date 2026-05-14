@@ -22,7 +22,7 @@ class TelegramNotifier:
             return None
 
     def send_odx_heartbeat(self, data: dict):
-        """v9.4 Standardized Key & Sentiment Heartbeat"""
+        """v9.5 Standardized Key & Sentiment Heartbeat"""
         try:
             time_str = data.get("time", "00:00")
             spot = data.get("spot", 0.0)
@@ -56,8 +56,8 @@ class TelegramNotifier:
                 row = f"{strike_str:<7} | {ce_fmt:<8} {c_agg:<5}| {pe_fmt:<8} {p_agg:<5}| {who:<5}| {signal}\n"
                 body += row
 
-            # v9.4: Synchronized Aggregator Read
-            agg = data.get("aggregator", {})
+            # v9.5: Standardized Aggregator Read
+            agg        = data.get("aggregator", {})
             ce_buy     = float(agg.get("ce_buy",  0))
             ce_sell    = float(agg.get("ce_sell", 0))
             pe_buy     = float(agg.get("pe_buy",  0))
@@ -71,9 +71,9 @@ class TelegramNotifier:
             footer = (
                 f"----------------------------------------------------------\n"
                 f"Institutional Flow (60s)\n"
-                f"BIAS: {bias:+.1f}L {emoji} {trend}\n"
                 f"CE: {ce_buy:.1f}L Buy | {ce_sell:.1f}L Sell\n"
-                f"PE: {pe_buy:.1f}L Buy | {pe_sell:.1f}L Sell"
+                f"PE: {pe_buy:.1f}L Buy | {pe_sell:.1f}L Sell\n"
+                f"BIAS: {bias:+.1f}L {emoji} {trend}"
             )
             
             text = header + body + footer

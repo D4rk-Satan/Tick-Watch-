@@ -82,7 +82,6 @@ async def odx_cycle_loop():
                 now_ts = time.time()
                 current_deals = [d for d in list(deal_cache) if now_ts - float(d.get("timestamp", 0)) <= 60]
                 
-                strikes_data = []
                 client_id = os.getenv("FYERS_CLIENT_ID")
                 access_token = os.getenv("FYERS_ACCESS_TOKEN") or (fyers_stream.access_token if fyers_stream else None)
                 
@@ -142,7 +141,9 @@ async def odx_cycle_loop():
                                 if d_strike not in deals_by_strike: deals_by_strike[d_strike] = {"CE": [], "PE": []}
                                 deals_by_strike[d_strike][d_type].append(d)
 
+                        # v9.5: STRICT Initialization before loop
                         ce_buy_cr = ce_sell_cr = pe_buy_cr = pe_sell_cr = 0.0
+                        strikes_data = []
 
                         for strike in sorted(strike_map.keys()):
                             row = strike_map[strike]
@@ -150,17 +151,13 @@ async def odx_cycle_loop():
                             if not ce_row or not pe_row: continue
                             
                             ce_sym, pe_sym = ce_row.get("symbol"), pe_row.get("symbol")
-                            ce_oi, pe_oi = float(ce_row.get("oi") or 0.0), float(pe_row.get("oi") or 0.0)
-                            
                             if abs(strike - atm) <= 250: temp_nifty_strikes.extend([ce_sym, pe_sym])
 
                             strike_deals = deals_by_strike.get(strike, {"CE": [], "PE": []})
-                            ce_deals, pe_deals = strike_deals["CE"], strike_deals["PE"]
-                            
                             ce_agg = pe_agg = ce_who = pe_who = "----"
-                            ce_pulse_l = pe_pulse_l = 0.0
+                            ce_pulse_cr = pe_pulse_cr = 0.0
 
-                            for sym_type, sym_deals in [("CE", ce_deals), ("PE", pe_deals)]:
+                            for sym_type, sym_deals in [("CE", strike_deals["CE"]), ("PE", strike_deals["PE"])]:
                                 if not sym_deals: continue
 
                                 buy_deals  = [d for d in sym_deals if d.get("direction") == "BUY"]
@@ -168,7 +165,7 @@ async def odx_cycle_loop():
 
                                 d_buy_l  = sum(float(d.get("qty", 0)) * float(d.get("ltp", 0)) for d in buy_deals)  / 100000
                                 d_sell_l = sum(float(d.get("qty", 0)) * float(d.get("ltp", 0)) for d in sell_deals) / 100000
-                                net_l = d_buy_l - d_sell_l
+                                net_cr = d_buy_l - d_sell_l
 
                                 buys = sum(float(d.get("qty", 0)) for d in buy_deals)
                                 sells = sum(float(d.get("qty", 0)) for d in sell_deals)
@@ -181,67 +178,37 @@ async def odx_cycle_loop():
                                 if sym_type == "CE":
                                     ce_buy_cr += d_buy_l
                                     ce_sell_cr += d_sell_l
-                                    ce_agg, ce_who, ce_pulse_l = agg, who, net_l
+                                    ce_agg, ce_who, ce_pulse_cr = agg, who, net_cr
                                 else:
                                     pe_buy_cr += d_buy_l
                                     pe_sell_cr += d_sell_l
-                                    pe_agg, pe_who, pe_pulse_l = agg, who, net_l
+                                    pe_agg, pe_who, pe_pulse_cr = agg, who, net_cr
 
-                            if ce_pulse_l != 0 and pe_pulse_l != 0:
-                                if ce_pulse_l > 0 and pe_pulse_l < 0:   label = "Bull Spread⚡"
-                                elif ce_pulse_l < 0 and pe_pulse_l > 0: label = "Bear Spread⚡"
-                                elif ce_pulse_l > 0 and pe_pulse_l > 0: label = "Straddle Buy⚡"
+                            if ce_pulse_cr != 0 and pe_pulse_cr != 0:
+                                if ce_pulse_cr > 0 and pe_pulse_cr < 0:   label = "Bull Spread⚡"
+                                elif ce_pulse_cr < 0 and pe_pulse_cr > 0: label = "Bear Spread⚡"
+                                elif ce_pulse_cr > 0 and pe_pulse_cr > 0: label = "Straddle Buy⚡"
                                 else:                                   label = "Straddle Write⚡"
-                            elif ce_pulse_l > 0:  label = "Call Buy⚡"
-                            elif ce_pulse_l < 0:  label = "Call Write⚡"
-                            elif pe_pulse_l > 0:  label = "Put Buy⚡"
-                            elif pe_pulse_l < 0:  label = "Put Write⚡"
+                            elif ce_pulse_cr > 0:  label = "Call Buy⚡"
+                            elif ce_pulse_cr < 0:  label = "Call Write⚡"
+                            elif pe_pulse_cr > 0:  label = "Put Buy⚡"
+                            elif pe_pulse_cr < 0:  label = "Put Write⚡"
                             else:                  label = "Accumulate"
 
                             final_who = ce_who if ce_who != "----" else pe_who
-
                             strikes_data.append({
                                 "strike": int(strike), "is_atm": strike == atm,
-                                "ce_delta_l": float(ce_pulse_l), "pe_delta_l": float(pe_pulse_l),
+                                "ce_delta_l": float(ce_pulse_cr), "pe_delta_l": float(pe_pulse_cr),
                                 "ce_aggressor": str(ce_agg), "pe_aggressor": str(pe_agg),
                                 "who": str(final_who), "label": str(label)
                             })
 
-                        new_strikes = list(set(s for s in temp_nifty_strikes if s and isinstance(s, str)))
-                        if set(new_strikes) != set(nifty_strikes_to_sub):
-                            nifty_strikes_to_sub = new_strikes
-                            if fyers_stream: 
-                                fyers_stream.subscribe_symbols(nifty_strikes_to_sub)
-
-                        await check_instant_alerts(fyers_stream.notifier, strikes_data, spot, atm)
-                        
-                        spike_alerts = []
-                        pin_alerts   = []
-
-                        for sym, oi_deque in fyers_stream.engine.oi_history.items():
-                            if not oi_deque: continue
-                            spike = fyers_stream.engine.detect_oi_spike(sym)
-                            if spike.get("spike"):
-                                spike_alerts.append(f"🔥 OI SPIKE: {sym} +{spike['pct_change']}% ({spike['abs_change']:,} contracts)")
-                            
-                            current_oi = oi_deque[-1]
-                            recent = [d for d in list(deal_cache) if d.get("symbol") == sym]
-                            if recent:
-                                last_ltp = recent[-1].get("ltp", 0)
-                                pin = fyers_stream.engine.detect_pin(sym, last_ltp, current_oi)
-                                if pin.get("pin"):
-                                    pin_alerts.append(f"📌 PIN ALERT: {pin['strike']} locked ±{pin['price_range_pct']}% OI+{pin['oi_growth']:,}")
-
-                        if spike_alerts or pin_alerts:
-                            alert_text = "SMART SIGNAL ALERTS\n\n"
-                            if spike_alerts: alert_text += "\n".join(spike_alerts) + "\n\n"
-                            if pin_alerts: alert_text += "\n".join(pin_alerts)
-                            fyers_stream.notifier.send_message(alert_text)
-
-                        # v9.4: Standardized Aggregator Keys
+                        # v9.5: Calculate bias AFTER loop completes
                         ce_net = ce_buy_cr - ce_sell_cr
                         pe_net = pe_buy_cr - pe_sell_cr
                         bias_cr = ce_net - pe_net
+
+                        print(f"AGGREGATOR DEBUG: ce_buy={ce_buy_cr:.1f} ce_sell={ce_sell_cr:.1f} pe_buy={pe_buy_cr:.1f} pe_sell={pe_sell_cr:.1f} bias={bias_cr:.1f}", flush=True)
 
                         odx_payload = {
                             "time": str(current_time), "spot": float(spot), "atm": int(atm), "pcr": live_pcr,
@@ -254,6 +221,13 @@ async def odx_cycle_loop():
                                 "pe_sell": round(float(pe_sell_cr), 1)
                             }
                         }
+
+                        new_strikes = list(set(s for s in temp_nifty_strikes if s and isinstance(s, str)))
+                        if set(new_strikes) != set(nifty_strikes_to_sub):
+                            nifty_strikes_to_sub = new_strikes
+                            if fyers_stream: fyers_stream.subscribe_symbols(nifty_strikes_to_sub)
+
+                        await check_instant_alerts(fyers_stream.notifier, strikes_data, spot, atm)
                         fyers_stream.notifier.send_odx_heartbeat(odx_payload)
 
             except Exception as e: print(f"ODX Error: {e}")
